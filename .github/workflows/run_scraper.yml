@@ -31,9 +31,10 @@ jobs:
           EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
         run: python scraper.py
 
-      - name: Upload screenshots si erreur
+      - name: Sauvegarder les captures d'écran
         uses: actions/upload-artifact@v4
-        if: always() # S'exécute même si le script plante
+        if: always() # <--- FORCE le téléchargement même si le script a réussi
         with:
           name: selenium-screenshots
           path: debug_*.png
+          retention-days: 5 # Optionnel : garde les images 5 jours
