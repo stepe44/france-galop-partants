@@ -30,11 +30,15 @@ def clean_text(text):
     cleaned = re.sub(r'[^a-zA-Z0-9/:\. ]', '', text)
     return " ".join(cleaned.split()).strip()
 
-def save_screenshot(driver, label):
-    timestamp = datetime.now().strftime("%Hh%M_%S")
-    filename = f"debug_{label}_{timestamp}.png"
-    driver.save_screenshot(filename)
-    print(f"📸 Capture d'écran : {filename}")
+def check_session(driver):
+    """Vérifie la session via la classe body et le bouton Mon espace."""
+    try:
+        body_class = driver.find_element(By.TAG_NAME, "body").get_attribute("class")
+        mon_espace = driver.find_elements(By.CSS_SELECTOR, "#block-francegalop-account-menu .menu-user")
+        is_logged = "user-logged-in" in body_class and len(mon_espace) > 0
+        print(f"--- Session : {'🔒 CONNECTÉ' if is_logged else '🔓 PUBLIC'} ---")
+        return is_logged
+    except: return False
 
 def run_scraper():
     chrome_options = Options()
@@ -52,7 +56,7 @@ def run_scraper():
     
     today_results = []
     tomorrow_logs = []
-    seen_course_urls = set() # Pour éviter les doublons
+    seen_urls = set() # Pour éviter les doublons entre Partants et Engagements
 
     try:
         # 1. CONNEXION
@@ -64,20 +68,22 @@ def run_scraper():
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#user-login-form input[name='name']"))).send_keys(EMAIL_SENDER)
         driver.find_element(By.CSS_SELECTOR, "#user-login-form input[name='pass']").send_keys(FG_PASSWORD)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "edit-submit"))
-        time.sleep(6)
+        time.sleep(7)
 
         # 2. ANALYSE ENTRAINEURS
         for trainer_url in URLS_ENTRAINEURS:
             driver.get(trainer_url)
             time.sleep(8)
-            
+            check_session(driver)
+
             try:
-                t_name = driver.find_element(By.CSS_SELECTOR, "h1, .page-title").text
+                t_name = driver.find_element(By.CSS_SELECTOR, "h1, .page-header").text
                 trainer_name = clean_text(t_name).replace("ENTRAINEUR", "").strip()
             except: trainer_name = "Inconnu"
 
-            rows = driver.find_elements(By.TAG_NAME, "tr")
-            runners = []
+            # Correction des index basés sur vos captures d'écran
+            # cells[0]: Cheval, cells[2]: Date, cells[4]: Prix/Lien
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
             for row in rows:
                 txt = row.text
                 if today in txt or tomorrow in txt:
@@ -85,80 +91,72 @@ def run_scraper():
                         link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
                         url = link_el.get_attribute("href")
                         
-                        # --- GESTION DOUBLONS ---
-                        # On ne traite le cheval que si l'URL de sa course n'a pas encore été vue
-                        if url in seen_course_urls:
-                            continue
-                        seen_course_urls.add(url)
+                        if url in seen_urls: continue
+                        seen_urls.add(url)
 
                         cells = row.find_elements(By.TAG_NAME, "td")
-                        horse_name = clean_text(cells[4].text)
-                        runners.append({
+                        horse_name = clean_text(cells[0].text)
+                        
+                        # Ajout du partant à la file d'attente
+                        res = {
                             'date': today if today in txt else tomorrow,
                             'horse': horse_name,
                             'horse_search': horse_name[:10].lower(),
                             'url': url,
                             'trainer': trainer_name,
-                            'course_simple': clean_text(cells[3].text)
-                        })
+                            'course_name': clean_text(cells[4].text)
+                        }
+                        
+                        # 3. ANALYSE DE L'HEURE (Sur la page course ouverte)
+                        # On change d'onglet/page ici
+                        current_window = driver.current_window_handle
+                        driver.execute_script(f"window.open('{url}');")
+                        driver.switch_to.window(driver.window_handles[-1])
+                        time.sleep(6)
+                        
+                        # Recherche du bon paragraphe d'infos (Image 17115d)
+                        paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
+                        heure = "00:00"
+                        hippodrome = "Inconnu"
+                        
+                        for p in paragraphs:
+                            p_txt = p.text
+                            if r"/" in p_txt and "h" in p_txt: # Ligne contenant la date et l'heure
+                                print(f"      DEBUG Ligne Infos : {p_txt}")
+                                match_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
+                                if match_h: heure = match_h.group(1)
+                                if "," in p_txt: hippodrome = clean_text(p_txt.split(",")[-1])
+                                break
+
+                        # Extraction N° (Image 171578)
+                        xpath = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{res['horse_search']}')]"
+                        horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
+                        num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text
+                        num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
+
+                        final_line = f"{res['date']} / {hippodrome} / {heure} / {res['course_name']} / N°{num_cheval} {res['horse']} (Entr: {res['trainer']})"
+                        
+                        if res['date'] == today:
+                            today_results.append(final_line)
+                        else:
+                            tomorrow_logs.append(final_line)
+                        
+                        print(f"      ✅ Trouvé : N°{num_cheval} à {heure}")
+                        
+                        driver.close()
+                        driver.switch_to.window(current_window)
                     except: continue
-
-            # 3. EXTRACTION PRÉCISE (REGEX)
-            for r in runners:
-                print(f"   🔗 Navigation Course : {r['url']}")
-                driver.get(r['url'])
-                time.sleep(6)
-                
-                try:
-                    # On récupère tous les paragraphes de la zone détail
-                    paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
-                    header_line = ""
-                    
-                    # On cherche celui qui contient la date (ex: 2026)
-                    for p in paragraphs:
-                        if "2026" in p.text and "h" in p.text:
-                            header_line = p.text
-                            break
-                    
-                    print(f"      DEBUG Header Brut : {header_line}")
-                    
-                    # REGEX : 21/02/2026 11h28, FONTAINEBLEAU
-                    # Extraction de l'heure
-                    match_h = re.search(r'(\d{1,2}h\d{2})', header_line)
-                    heure = match_h.group(1) if match_h else "00:00"
-                    
-                    # Extraction de l'hippodrome (Tout ce qui est après la dernière virgule)
-                    hippodrome = "Inconnu"
-                    if "," in header_line:
-                        hippodrome = clean_text(header_line.split(",")[-1])
-
-                    # Extraction du N° (raceTable)
-                    xpath_horse = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
-                    horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
-                    num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
-                    num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
-
-                    final_line = f"{r['date']} / {hippodrome} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse']} (Entr: {r['trainer']})"
-                    
-                    if r['date'] == today:
-                        today_results.append(final_line)
-                    else:
-                        tomorrow_logs.append(final_line)
-                    print(f"      ✅ Trouvé : N°{num_cheval} à {heure} ({hippodrome})")
-
-                except Exception as e:
-                    print(f"      ⚠️ Échec extraction détails : {str(e)[:50]}")
 
         # 4. BILAN
         print(f"\n--- 📝 LOGS PARTANTS DEMAIN ({tomorrow}) ---")
         if tomorrow_logs:
             for l in tomorrow_logs: print(l)
-        else: print("Aucun partant détecté.")
+        else: print("Aucun partant pour demain.")
         
         if today_results:
             send_final_email("\n".join(today_results))
 
-    except Exception as e: print(f"💥 Erreur globale : {e}")
+    except Exception as e: print(f"💥 Erreur : {e}")
     finally: driver.quit()
 
 def send_final_email(content):
