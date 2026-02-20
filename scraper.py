@@ -42,6 +42,7 @@ def check_session(driver):
     try:
         body_class = driver.find_element(By.TAG_NAME, "body").get_attribute("class")
         mon_espace = driver.find_elements(By.CSS_SELECTOR, "#block-francegalop-account-menu .menu-user")
+        
         is_logged = "user-logged-in" in body_class and len(mon_espace) > 0
         print(f"--- 🔒 État Session : {'CONNECTÉ' if is_logged else 'DÉCONNECTÉ'} sur {driver.current_url} ---")
         return is_logged
@@ -64,7 +65,7 @@ def run_scraper():
     
     today_results = []
     tomorrow_logs = []
-    seen_course_urls = set()
+    seen_course_urls = set() # Gestion des doublons Partants/Engagements
 
     try:
         # 1. ÉTAPE DE CONNEXION
@@ -119,15 +120,11 @@ def run_scraper():
                         })
                     except: continue
 
-            # 3. EXTRACTION SUR LA FICHE COURSE
+            # 3. EXTRACTION PRÉCISE SUR LA FICHE COURSE (REGEX)
             for r in runners:
-                print(f"   🔗 Ouverture Course : {r['url']}")
                 driver.get(r['url'])
                 time.sleep(6)
                 check_session(driver)
-                
-                # --- CAPTURE D'ÉCRAN DE LA PAGE COURSE ---
-                save_screenshot(driver, f"course_{r['horse'][:5]}")
                 
                 try:
                     paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
@@ -135,34 +132,36 @@ def run_scraper():
                     
                     for p in paragraphs:
                         p_txt = p.text
+                        # Cible la ligne type : "5ème(O/ 3130), — 21/02/2026 13h40, FONTAINEBLEAU"
                         if "2026" in p_txt and "(" in p_txt:
                             print(f"      📝 Info Header : {p_txt}")
                             
-                            # REGEX : Extrait le chiffre au début avant 'ème' ou '('
+                            # Extraction du chiffre seul au début de la ligne
                             match_n = re.search(r'^(\d+)', p_txt.strip())
                             if match_n: n_course = match_n.group(1)
                             
-                            # REGEX : Heure
                             match_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
                             if match_h: heure = match_h.group(1)
-                            
-                            # Hippodrome
                             if "," in p_txt: hippodrome = clean_text(p_txt.split(",")[-1])
                             break
 
-                    # Extraction du N° dans le tableau
+                    # Extraction du N° du cheval
                     xpath_horse = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
-                    num_cheval = "".join(filter(str.isdigit, horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()))
+                    num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
+                    num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
 
+                    # Construction de la ligne avec le numéro de course extrait
                     final_line = f"{r['date']} / {hippodrome} / {n_course} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse']} (Entr: {r['trainer']})"
                     
-                    if r['date'] == today: today_results.append(final_line)
-                    else: tomorrow_logs.append(final_line)
+                    if r['date'] == today:
+                        today_results.append(final_line)
+                    else:
+                        tomorrow_logs.append(final_line)
                     print(f"      ✅ Trouvé : Course {n_course} à {heure}")
 
                 except Exception as e:
-                    print(f"      ⚠️ Échec extraction : {str(e)[:50]}")
+                    print(f"      ⚠️ Échec extraction détails : {str(e)[:50]}")
 
         # 4. BILAN FINAL
         print(f"\n--- 📝 LOGS PARTANTS DEMAIN ({tomorrow}) ---")
