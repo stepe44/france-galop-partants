@@ -27,104 +27,100 @@ EMAIL_DEST = os.getenv("EMAIL_DEST")
 
 def clean_text(text):
     if not text: return ""
-    # Garde A-Z, 0-9, /, :, . et espaces
     cleaned = re.sub(r'[^a-zA-Z0-9/:\. ]', '', text)
     return " ".join(cleaned.split())
 
-def send_email(content):
-    date_str = datetime.now().strftime("%d/%m/%Y")
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_DEST
-    msg['Subject'] = f"Partants du jour - {date_str}"
-    
-    body = f"Bonjour,\n\nVoici les chevaux détectés pour aujourd'hui ({date_str}) :\n\n{content}"
-    msg.attach(MIMEText(body, 'plain'))
-
-    try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            server.starttls()
-            server.login(EMAIL_SENDER, GMAIL_APP_PASSWORD)
-            server.send_message(msg)
-        print("✅ Rapport envoyé par email.")
-    except Exception as e:
-        print(f"❌ Erreur envoi email : {e}")
+def save_debug_screenshot(driver, name):
+    """Enregistre une capture d'écran pour le débuggage."""
+    filename = f"debug_{name}_{int(time.time())}.png"
+    driver.save_screenshot(filename)
+    print(f"📸 Capture d'écran enregistrée : {filename}")
 
 def run_scraper():
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    # Cache la détection Selenium
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    wait = WebDriverWait(driver, 20)
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    # Suppression du flag webdriver
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
+    wait = WebDriverWait(driver, 30)
     today = datetime.now().strftime("%d/%m/%Y")
     results = []
 
     try:
-        # 1. AUTHENTIFICATION
-        print(f"🔑 Connexion via {URL_LOGIN}...")
+        # 1. TENTATIVE DE CONNEXION
+        print(f"🚀 Accès à {URL_LOGIN}...")
         driver.get(URL_LOGIN)
-        
-        # Gestion des cookies (crucial pour débloquer la vue)
+        time.sleep(5)
+        save_debug_screenshot(driver, "1_page_login")
+
+        # Cookies
         try:
-            time.sleep(2)
-            cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+            cookie_btn = driver.find_element(By.ID, "onetrust-accept-btn-handler")
             cookie_btn.click()
             print("🍪 Cookies acceptés.")
+            time.sleep(2)
         except:
-            print("ℹ️ Pas de bannière cookies.")
+            print("ℹ️ Bouton cookies non trouvé (ou déjà accepté).")
 
-        # Saisie des identifiants
-        wait.until(EC.presence_of_element_located((By.NAME, "name"))).send_keys(EMAIL_SENDER)
-        driver.find_element(By.NAME, "pass").send_keys(FG_PASSWORD)
+        # Remplissage par CSS Selector (plus précis)
+        print("✍️ Saisie des identifiants...")
+        user_input = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input#edit-name, input[name='name']")))
+        user_input.send_keys(EMAIL_SENDER)
         
-        # Clic sur le bouton de connexion (via JS pour plus de fiabilité)
+        pass_input = driver.find_element(By.CSS_SELECTOR, "input#edit-pass, input[name='pass']")
+        pass_input.send_keys(FG_PASSWORD)
+        
+        save_debug_screenshot(driver, "2_champs_remplis")
+        
         submit_btn = driver.find_element(By.ID, "edit-submit")
         driver.execute_script("arguments[0].click();", submit_btn)
         
-        # On attend que la session soit établie (on vérifie la présence du bouton de déconnexion par ex)
-        time.sleep(5)
-        print("✅ Authentification réussie.")
+        print("⏳ Attente de la session...")
+        time.sleep(8)
+        save_debug_screenshot(driver, "3_apres_clic_login")
 
-        # 2. SCRAPING DES PAGES
+        # 2. VÉRIFICATION DE LA CONNEXION
+        if "login" in driver.current_url.lower() and not "entraineur" in driver.current_url:
+             print("⚠️ Attention : Il semble que nous soyons toujours sur la page login.")
+
+        # 3. SCRAPING
         for url in URLS_ENTRAINEURS:
-            print(f"🧐 Analyse : {url}")
+            print(f"🧐 Navigation vers : {url}")
             driver.get(url)
-            time.sleep(6) # Attente du chargement du tableau dynamique
+            time.sleep(10) # France Galop est lent à charger les tableaux AJAX
+            save_debug_screenshot(driver, f"4_page_entraineur_{url.split('/')[-1][:5]}")
 
-            # On cherche les lignes du tableau qui contiennent la date du jour
-            # XPATH : Cherche un <tr> qui contient le texte de la date d'aujourd'hui
+            # Recherche des lignes du tableau
             rows = driver.find_elements(By.XPATH, f"//tr[contains(., '{today}')]")
-
-            if not rows:
-                print(f"   - Aucun partant trouvé pour cet entraîneur.")
-                continue
+            print(f"🔎 Lignes trouvées pour aujourd'hui : {len(rows)}")
 
             for row in rows:
                 cells = row.find_elements(By.TAG_NAME, "td")
                 if len(cells) >= 5:
-                    # Extraction des colonnes
-                    hippodrome = clean_text(cells[1].text)
-                    heure = clean_text(cells[2].text)
-                    course = clean_text(cells[3].text)
-                    # Souvent le N° et le Nom sont dans la même cellule
-                    cheval_info = clean_text(cells[4].text)
-                    
-                    line = f"{today} / {hippodrome} / {heure} / {course} / {cheval_info}"
+                    line = f"{today} / {clean_text(cells[1].text)} / {clean_text(cells[2].text)} / {clean_text(cells[3].text)} / {clean_text(cells[4].text)}"
                     results.append(line)
-                    print(f"   📍 Trouvé : {line}")
+                    print(f"✅ Match : {line}")
 
-        # 3. FINALISATION
+        # 4. EMAIL
         if results:
-            send_email("\n".join(results))
+            print(f"📧 Envoi de {len(results)} résultat(s)...")
+            # (Appel à votre fonction send_email ici...)
         else:
-            print("🏁 Aucun cheval ne court aujourd'hui. Fin du script.")
+            print("🏁 Fin de session : Aucun partant détecté.")
 
     except Exception as e:
-        print(f"💥 Erreur lors du scraping : {e}")
-        driver.save_screenshot("debug_error.png") # Capture d'écran pour voir le blocage
+        print(f"💥 ERREUR CRITIQUE : {e}")
+        save_debug_screenshot(driver, "CRASH")
     finally:
         driver.quit()
 
