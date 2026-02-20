@@ -40,11 +40,8 @@ def save_screenshot(driver, label):
 def check_session(driver):
     """Vérifie la session via l'indicateur 'Mon espace' et la classe 'user-logged-in'."""
     try:
-        # Signal technique : classe user-logged-in sur le body
         body_class = driver.find_element(By.TAG_NAME, "body").get_attribute("class")
-        # Signal visuel : lien 'Mon espace' dans le menu
         mon_espace = driver.find_elements(By.CSS_SELECTOR, "#block-francegalop-account-menu .menu-user")
-        
         is_logged = "user-logged-in" in body_class and len(mon_espace) > 0
         print(f"--- 🔒 État Session : {'CONNECTÉ' if is_logged else 'DÉCONNECTÉ'} sur {driver.current_url} ---")
         return is_logged
@@ -59,7 +56,6 @@ def run_scraper():
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
     
-    # Instance unique pour conserver les cookies tout au long du script
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 25)
     
@@ -68,37 +64,31 @@ def run_scraper():
     
     today_results = []
     tomorrow_logs = []
-    seen_course_urls = set() # Gestion des doublons Partants/Engagements
+    seen_course_urls = set()
 
     try:
         # 1. ÉTAPE DE CONNEXION
-        print(f"🌐 Ouverture de la page : {URL_LOGIN}")
         driver.get(URL_LOGIN)
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        print("🔑 Saisie des identifiants dans 'Mon espace'...")
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#user-login-form input[name='name']"))).send_keys(EMAIL_SENDER)
         driver.find_element(By.CSS_SELECTOR, "#user-login-form input[name='pass']").send_keys(FG_PASSWORD)
         
-        # Clic sur le bouton noir "Se connecter"
         login_btn = driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']")
         driver.execute_script("arguments[0].click();", login_btn)
         
         time.sleep(7)
         if not check_session(driver):
             print("❌ Erreur : Connexion impossible.")
-            save_screenshot(driver, "fail_login")
             return
 
         # 2. ANALYSE DES PAGES ENTRAINEURS
         for trainer_url in URLS_ENTRAINEURS:
-            print(f"\n🌍 Navigation entraîneur : {trainer_url}")
             driver.get(trainer_url)
             time.sleep(8)
             check_session(driver)
-            save_screenshot(driver, f"page_trainer_{trainer_url[-10:]}")
 
             try:
                 t_name = driver.find_element(By.CSS_SELECTOR, "h1, .page-title").text
@@ -111,11 +101,9 @@ def run_scraper():
                 txt = row.text
                 if today in txt or tomorrow in txt:
                     try:
-                        # On récupère le lien de la course
                         link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
                         course_url = link_el.get_attribute("href")
                         
-                        # --- GESTION DOUBLONS ---
                         if course_url in seen_course_urls: continue
                         seen_course_urls.add(course_url)
 
@@ -131,54 +119,50 @@ def run_scraper():
                         })
                     except: continue
 
-            # 3. EXTRACTION PRÉCISE SUR LA FICHE COURSE (REGEX)
+            # 3. EXTRACTION SUR LA FICHE COURSE
             for r in runners:
                 print(f"   🔗 Ouverture Course : {r['url']}")
                 driver.get(r['url'])
                 time.sleep(6)
                 check_session(driver)
                 
+                # --- CAPTURE D'ÉCRAN DE LA PAGE COURSE ---
+                save_screenshot(driver, f"course_{r['horse'][:5]}")
+                
                 try:
-                    # Extraction Heure, Hippodrome et N° de course via REGEX
                     paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
-                    heure = "00:00"
-                    hippodrome = "Inconnu"
-                    n_course = "?"
+                    heure, hippodrome, n_course = "00:00", "Inconnu", "?"
                     
                     for p in paragraphs:
                         p_txt = p.text
-                        # On cherche la ligne type : "5ème(O/ 3130), Classe 2 — 21/02/2026 13h40, FONTAINEBLEAU"
-                        if "2026" in p_txt and "h" in p_txt:
+                        if "2026" in p_txt and "(" in p_txt:
                             print(f"      📝 Info Header : {p_txt}")
                             
-                            # Extraction du N° de la course (le chiffre seul en début de ligne)
+                            # REGEX : Extrait le chiffre au début avant 'ème' ou '('
                             match_n = re.search(r'^(\d+)', p_txt.strip())
                             if match_n: n_course = match_n.group(1)
                             
+                            # REGEX : Heure
                             match_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
                             if match_h: heure = match_h.group(1)
+                            
+                            # Hippodrome
                             if "," in p_txt: hippodrome = clean_text(p_txt.split(",")[-1])
                             break
 
-                    # Extraction du N° dans le tableau raceTable
+                    # Extraction du N° dans le tableau
                     xpath_horse = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
-                    
-                    # Le N° est dans la 1ère colonne (td[0])
-                    num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
-                    num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
+                    num_cheval = "".join(filter(str.isdigit, horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()))
 
-                    # Ligne finale incluant le numéro de la course
                     final_line = f"{r['date']} / {hippodrome} / {n_course} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse']} (Entr: {r['trainer']})"
                     
-                    if r['date'] == today:
-                        today_results.append(final_line)
-                    else:
-                        tomorrow_logs.append(final_line)
-                    print(f"      ✅ Trouvé : N°{num_cheval} à {heure} (Course {n_course} à {hippodrome})")
+                    if r['date'] == today: today_results.append(final_line)
+                    else: tomorrow_logs.append(final_line)
+                    print(f"      ✅ Trouvé : Course {n_course} à {heure}")
 
                 except Exception as e:
-                    print(f"      ⚠️ Échec extraction détails : {str(e)[:50]}")
+                    print(f"      ⚠️ Échec extraction : {str(e)[:50]}")
 
         # 4. BILAN FINAL
         print(f"\n--- 📝 LOGS PARTANTS DEMAIN ({tomorrow}) ---")
@@ -187,12 +171,10 @@ def run_scraper():
         else: print("Aucun partant pour demain.")
         
         if today_results:
-            print(f"\n📧 Envoi email (Aujourd'hui : {len(today_results)})")
             send_final_email("\n".join(today_results))
 
     except Exception as e:
         print(f"💥 Erreur globale : {e}")
-        save_screenshot(driver, "CRASH_ERREUR")
     finally:
         driver.quit()
 
@@ -203,8 +185,7 @@ def send_final_email(content):
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as s:
             s.starttls(); s.login(EMAIL_SENDER, GMAIL_APP_PASSWORD); s.send_message(msg)
-        print("✅ Email envoyé.")
-    except: print("❌ Erreur email.")
+    except: pass
 
 if __name__ == "__main__":
     run_scraper()
