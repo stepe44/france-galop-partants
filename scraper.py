@@ -71,7 +71,7 @@ def run_scraper():
     seen_course_urls = set() # Gestion des doublons Partants/Engagements
 
     try:
-        # 1. ÉTAPE DE CONNEXION (Image 160a3b)
+        # 1. ÉTAPE DE CONNEXION
         print(f"🌐 Ouverture de la page : {URL_LOGIN}")
         driver.get(URL_LOGIN)
         try:
@@ -139,17 +139,22 @@ def run_scraper():
                 check_session(driver)
                 
                 try:
-                    # Extraction Heure et Hippodrome via REGEX
-                    # On parcourt les paragraphes pour trouver la ligne d'info complète
+                    # Extraction Heure, Hippodrome et N° de course via REGEX
                     paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
                     heure = "00:00"
                     hippodrome = "Inconnu"
+                    n_course = "?"
                     
                     for p in paragraphs:
                         p_txt = p.text
-                        # On cherche la ligne type : "21/02/2026 11h28, FONTAINEBLEAU"
+                        # On cherche la ligne type : "5ème(O/ 3130), Classe 2 — 21/02/2026 13h40, FONTAINEBLEAU"
                         if "2026" in p_txt and "h" in p_txt:
                             print(f"      📝 Info Header : {p_txt}")
+                            
+                            # Extraction du N° de la course (le chiffre seul en début de ligne)
+                            match_n = re.search(r'^(\d+)', p_txt.strip())
+                            if match_n: n_course = match_n.group(1)
+                            
                             match_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
                             if match_h: heure = match_h.group(1)
                             if "," in p_txt: hippodrome = clean_text(p_txt.split(",")[-1])
@@ -163,13 +168,14 @@ def run_scraper():
                     num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
                     num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
 
-                    final_line = f"{r['date']} / {hippodrome} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse']} (Entr: {r['trainer']})"
+                    # Ligne finale incluant le numéro de la course
+                    final_line = f"{r['date']} / {hippodrome} / {n_course} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse']} (Entr: {r['trainer']})"
                     
                     if r['date'] == today:
                         today_results.append(final_line)
                     else:
                         tomorrow_logs.append(final_line)
-                    print(f"      ✅ Trouvé : N°{num_cheval} à {heure} ({hippodrome})")
+                    print(f"      ✅ Trouvé : N°{num_cheval} à {heure} (Course {n_course} à {hippodrome})")
 
                 except Exception as e:
                     print(f"      ⚠️ Échec extraction détails : {str(e)[:50]}")
