@@ -39,7 +39,7 @@ def run_scraper():
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 20)
+    wait = WebDriverWait(driver, 25)
     
     today = datetime.now().strftime("%d/%m/%Y")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
@@ -49,53 +49,56 @@ def run_scraper():
 
     try:
         # 1. CONNEXION
-        print(f"🚀 Connexion à France Galop via {URL_LOGIN}...")
+        print(f"🌐 Ouverture de la page login : {URL_LOGIN}")
         driver.get(URL_LOGIN)
-        time.sleep(3)
+        time.sleep(4)
 
         try:
             cookie_btn = driver.find_element(By.ID, "onetrust-accept-btn-handler")
             cookie_btn.click()
-            time.sleep(1)
+            print("🍪 Cookies acceptés.")
         except:
             pass
 
-        wait.until(EC.presence_of_element_located((By.NAME, "name"))).send_keys(EMAIL_SENDER)
-        driver.find_element(By.NAME, "pass").send_keys(FG_PASSWORD)
+        print("✍️ Saisie des identifiants...")
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='name']"))).send_keys(EMAIL_SENDER)
+        driver.find_element(By.CSS_SELECTOR, "input[name='pass']").send_keys(FG_PASSWORD)
         
-        login_btn = driver.find_element(By.ID, "edit-submit")
-        driver.execute_script("arguments[0].click();", login_btn)
-        time.sleep(6)
+        login_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#user-login-form button[type='submit'], #edit-submit--2")))
+        driver.execute_script("arguments[0].click();", login_button)
+        print("🖱️ Clic sur 'Se connecter'")
+        time.sleep(7)
 
-        # 2. ANALYSE DES ENTRAINEURS
+        # 2. ANALYSE DES PAGES ENTRAINEURS
         for trainer_url in URLS_ENTRAINEURS:
+            print(f"\n🌍 Ouverture page entraîneur : {trainer_url}")
             driver.get(trainer_url)
-            time.sleep(7)
+            time.sleep(8)
 
+            # DETECTION ENTRAINEUR (Version stable reprise)
             try:
-                name_el = driver.find_element(By.CSS_SELECTOR, "h1, .page-title")
-                trainer_name = clean_text(name_el.text).replace("ENTRAINEUR", "").strip()
+                trainer_name_raw = driver.find_element(By.CSS_SELECTOR, "h1, .page-title").text
+                trainer_name = clean_text(trainer_name_raw).replace("ENTRAINEUR", "").strip()
             except:
                 trainer_name = "Inconnu"
             
-            print(f"🧐 Entraîneur détecté : {trainer_name}")
+            print(f"👤 Entraîneur : {trainer_name}")
 
-            # Collecte des chevaux partants Aujourd'hui ou Demain
-            runners = []
+            # Collecte des lignes du jour et demain
+            runners_to_check = []
             rows = driver.find_elements(By.TAG_NAME, "tr")
+
             for row in rows:
-                txt = row.text
-                if today in txt or tomorrow in txt:
+                row_text = row.text
+                if today in row_text or tomorrow in row_text:
                     try:
                         cells = row.find_elements(By.TAG_NAME, "td")
-                        # On récupère l'URL de la course ici
-                        link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
-                        course_url = link_el.get_attribute("href")
+                        link_element = row.find_element(By.CSS_SELECTOR, "td a[href*='/course/']")
                         
-                        runners.append({
-                            'date': today if today in txt else tomorrow,
-                            'horse': clean_text(cells[4].text),
-                            'url': course_url,
+                        runners_to_check.append({
+                            'date': today if today in row_text else tomorrow,
+                            'horse_name': clean_text(cells[4].text),
+                            'course_url': link_element.get_attribute("href"),
                             'trainer': trainer_name,
                             'hippodrome': clean_text(cells[1].text),
                             'course_name': clean_text(cells[3].text)
@@ -103,61 +106,53 @@ def run_scraper():
                     except:
                         continue
 
-            # 3. NAVIGATION ET EXTRACTION PRÉCISE
-            for r in runners:
-                # --- LOG DE L'URL POUR VÉRIFICATION ---
-                print(f"\n   📍 Analyse de : {r['horse']} ({r['date']})")
-                print(f"   🔗 URL suivie : {r['url']}")
-                
-                driver.get(r['url'])
-                time.sleep(5)
+            # 3. NAVIGATION VERS LES COURSES
+            for item in runners_to_check:
+                print(f"   📍 Analyse de : {item['horse_name']} ({item['date']})")
+                print(f"   🔗 Ouverture URL Course : {item['course_url']}")
+                driver.get(item['course_url'])
+                time.sleep(6)
                 
                 try:
                     # Extraction Heure
+                    heure_text = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".course-info-time, .heure, .course-date"))).text
                     heure = "00:00"
-                    for selector in [".course-info-time", ".heure", ".course-date"]:
-                        try:
-                            el_txt = driver.find_element(By.CSS_SELECTOR, selector).text
-                            if ":" in el_txt:
-                                match = re.search(r'\d{1,2}:\d{2}', el_txt)
-                                if match:
-                                    heure = match.group(0)
-                                    break
-                        except: continue
-
-                    # Extraction N° via XPATH insensible à la casse
-                    xpath_horse = f"//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse'].lower()}')]"
-                    row_horse = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
+                    match = re.search(r'\d{1,2}:\d{2}', heure_text)
+                    if match:
+                        heure = match.group(0)
                     
-                    n_cheval = row_horse.find_element(By.TAG_NAME, "td").text
-                    n_cheval = clean_text(n_cheval).split()[0]
-
-                    final_line = f"{r['date']} / {r['hippodrome']} / {heure} / {r['course_name']} / N°{n_cheval} {r['horse']} (Entr: {r['trainer']})"
+                    # Extraction N° (XPATH insensible à la casse)
+                    xpath_horse = f"//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{item['horse_name'].lower()}')]"
+                    horse_row = driver.find_element(By.XPATH, xpath_horse)
+                    num_cheval = clean_text(horse_row.find_element(By.TAG_NAME, "td").text).split()[0]
                     
-                    if r['date'] == today:
+                    final_line = f"{item['date']} / {item['hippodrome']} / {heure} / {item['course_name']} / N°{num_cheval} {item['horse_name']} (Entr: {item['trainer']})"
+                    
+                    if item['date'] == today:
                         today_results.append(final_line)
+                        print(f"      ✅ OK (Aujourd'hui)")
                     else:
                         tomorrow_logs.append(final_line)
-                    
-                    print(f"      ✅ Trouvé : N°{n_cheval} - Départ à {heure}")
-
+                        print(f"      📝 OK (Demain - Log uniquement)")
+                
                 except Exception as e:
-                    print(f"      ⚠️ Échec de l'extraction sur la page course.")
+                    print(f"   ⚠️ Échec détails pour {item['horse_name']}. Vérifiez l'URL manuellement.")
 
-        # 4. BILAN FINAL
-        print("\n--- 📝 LOGS PARTANTS DEMAIN ---")
+        # 4. LOGS ET EMAIL
+        print("\n--- 📝 RÉCAPITULATIF DEMAIN ---")
         if tomorrow_logs:
-            for l in tomorrow_logs: print(log)
-        else: print("Aucun partant détecté pour demain.")
+            for l in tomorrow_logs: print(l)
+        else:
+            print("Aucun partant pour demain.")
         
         if today_results:
-            print(f"\n📧 Envoi du récapitulatif par email...")
+            print(f"\n📧 Envoi email (Aujourd'hui : {len(today_results)} partants)")
             send_final_email("\n".join(today_results))
         else:
-            print("\n🏁 Aucun partant pour aujourd'hui. Fin de session.")
+            print("\n🏁 Aucun partant pour aujourd'hui.")
 
     except Exception as e:
-        print(f"💥 ERREUR CRITIQUE : {e}")
+        print(f"💥 Erreur globale : {e}")
     finally:
         driver.quit()
 
@@ -168,13 +163,13 @@ def send_final_email(content):
     msg['Subject'] = f"Partants France Galop - {datetime.now().strftime('%d/%m/%Y')}"
     msg.attach(MIMEText(content, 'plain'))
     try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as s:
-            s.starttls()
-            s.login(EMAIL_SENDER, GMAIL_APP_PASSWORD)
-            s.send_message(msg)
-        print("✅ Email envoyé avec succès.")
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(EMAIL_SENDER, GMAIL_APP_PASSWORD)
+            server.send_message(msg)
+        print("✅ Email envoyé.")
     except Exception as e:
-        print(f"❌ Échec de l'envoi de l'email : {e}")
+        print(f"❌ Erreur email : {e}")
 
 if __name__ == "__main__":
     run_scraper()
