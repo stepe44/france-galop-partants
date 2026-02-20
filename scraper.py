@@ -41,104 +41,139 @@ def run_scraper():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 20)
     
-    today = datetime.now().strftime("%d/%m/%Y")
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+    # 1. DEFINITION DES DATES
+    now = datetime.now()
+    today = now.strftime("%d/%m/%Y")
+    tomorrow = (now + timedelta(days=1)).strftime("%d/%m/%Y")
+    
+    print(f"--- 📅 INITIALISATION DES DATES ---")
+    print(f"Aujourd'hui recherché : [{today}]")
+    print(f"Demain recherché     : [{tomorrow}]")
+    print(f"----------------------------------\n")
     
     today_results = []
     tomorrow_logs = []
 
     try:
-        # 1. CONNEXION (Ciblage strict via Image 160a3b)
+        # 2. CONNEXION
+        print(f"🌐 Navigation vers : {URL_LOGIN}")
         driver.get(URL_LOGIN)
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
+            print("🍪 Cookies acceptés.")
         except: pass
 
-        print("🔑 Connexion au formulaire 'Mon espace'...")
+        print("🔑 Saisie des identifiants...")
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#user-login-form input[name='name']"))).send_keys(EMAIL_SENDER)
         driver.find_element(By.CSS_SELECTOR, "#user-login-form input[name='pass']").send_keys(FG_PASSWORD)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "edit-submit"))
         time.sleep(5)
 
-        # 2. ANALYSE ENTRAINEURS
+        # 3. ANALYSE DES ENTRAINEURS
         for trainer_url in URLS_ENTRAINEURS:
+            print(f"\n--- 🏠 ANALYSE ENTRAINEUR : {trainer_url} ---")
             driver.get(trainer_url)
-            time.sleep(6)
+            time.sleep(8) # On laisse bien charger le JS
             
             try:
                 t_name = driver.find_element(By.CSS_SELECTOR, "h1, .page-title").text
                 trainer_name = clean_text(t_name).replace("ENTRAINEUR", "").strip()
+                print(f"👤 Nom détecté : {trainer_name}")
             except: trainer_name = "Inconnu"
 
-            runners = []
-            # On cherche les lignes du tableau
-            rows = driver.find_elements(By.TAG_NAME, "tr")
-            for row in rows:
-                txt = row.text
-                if today in txt or tomorrow in txt:
-                    try:
-                        cells = row.find_elements(By.TAG_NAME, "td")
-                        horse_raw = cells[4].text.strip()
-                        runners.append({
-                            'date': today if today in txt else tomorrow,
-                            'horse_name': horse_raw,
-                            'horse_search': clean_text(horse_raw)[:10].lower(),
-                            'url': row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href"),
-                            'trainer': trainer_name,
-                            'course_name_page_1': clean_text(cells[3].text)
-                        })
-                    except: continue
+            # Récupération de toutes les lignes du tableau
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
+            print(f"📊 {len(rows)} lignes trouvées dans le tableau.")
 
-            # 3. EXTRACTION DYNAMIQUE (Ciblage via Image 17115d et 171578)
-            for r in runners:
-                print(f"\n🌍 Ouverture Course : {r['url']}")
+            runners_to_process = []
+
+            for idx, row in enumerate(rows):
+                txt = row.text.strip()
+                if not txt: continue
+                
+                # LOG DE CHAQUE LIGNE POUR VOIR LE FORMAT DES DATES
+                is_today = today in txt
+                is_tomorrow = tomorrow in txt
+                
+                if is_today or is_tomorrow:
+                    status = "✅ MATCH AUJOURD'HUI" if is_today else "🕒 MATCH DEMAIN"
+                    print(f"   [Ligne {idx}] {status} | Contenu : {txt[:100]}...")
+                    
+                    try:
+                        link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
+                        cells = row.find_elements(By.TAG_NAME, "td")
+                        
+                        runners_to_process.append({
+                            'date_label': today if is_today else tomorrow,
+                            'horse_name': clean_text(cells[4].text),
+                            'horse_search': clean_text(cells[4].text)[:10].lower(),
+                            'url': link_el.get_attribute("href"),
+                            'trainer': trainer_name,
+                            'course_simple': clean_text(cells[3].text)
+                        })
+                    except Exception as e:
+                        print(f"   ⚠️ Erreur d'extraction sur ligne {idx} : {e}")
+                else:
+                    # Optionnel : décommenter la ligne suivante pour voir TOUTES les lignes même celles qui ne matchent pas
+                    # print(f"   [Ligne {idx}] Ignorée (Date non match)")
+                    pass
+
+            # 4. EXTRACTION PRÉCISE SUR LA FICHE COURSE
+            for r in runners_to_process:
+                print(f"\n   🔎 FICHE COURSE : {r['horse_name']} ({r['date_label']})")
+                print(f"   🔗 URL : {r['url']}")
                 driver.get(r['url'])
-                time.sleep(5)
+                time.sleep(6)
                 
                 try:
-                    # HEURE & HIPPODROME (Basé sur image_17115d)
-                    # On cible le paragraphe dans course-detail
-                    header_p = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".course-detail p"))).text
-                    print(f"DEBUG Source Header : {header_p}")
+                    # INFOS EN-TETE (Image 17115d)
+                    header_p = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".course-detail p, .course-date-place"))).text
+                    print(f"      DEBUG Header : {header_p}")
                     
-                    # Regex pour l'heure (format 13h40 ou 11h28)
-                    match_h = re.search(r'\d{1,2}h\d{2}', header_p)
+                    match_h = re.search(r'\d{1,2}[h:]\d{2}', header_p)
                     heure = match_h.group(0) if match_h else "00:00"
-                    
-                    # Hippodrome : tout ce qui est après la dernière virgule
                     hippodrome = clean_text(header_p.split(",")[-1])
 
-                    # NUMÉRO (Basé sur image_171578 - table raceTable)
-                    # On cherche la ligne du cheval dans le tableau spécifique
+                    # NUMÉRO (Image 171578)
                     xpath_horse = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
+                    print(f"      DEBUG Ligne Cheval : {horse_row.text[:80]}...")
                     
-                    # Le N° est dans la 1ère cellule <td> de la ligne
-                    num_cheval = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
-                    num_cheval = "".join(filter(str.isdigit, num_cheval))
+                    num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
+                    num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
 
-                    final_line = f"{r['date']} / {hippodrome} / {heure} / {r['course_name_page_1']} / N°{num_cheval} {r['horse_name']} (Entr: {r['trainer']})"
+                    final_line = f"{r['date_label']} / {hippodrome} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse_name']} (Entr: {r['trainer']})"
                     
-                    if r['date'] == today:
+                    if r['date_label'] == today:
                         today_results.append(final_line)
                     else:
                         tomorrow_logs.append(final_line)
-                    
-                    print(f"✅ Extrait : N°{num_cheval} à {heure} à {hippodrome}")
+                    print(f"      ✨ SUCCÈS : Ajouté à la liste.")
 
                 except Exception as e:
-                    print(f"⚠️ Erreur sur la fiche course : {str(e)[:50]}")
+                    print(f"      ❌ ÉCHEC EXTRACTION : {str(e)[:100]}")
 
-        # 4. LOGS ET EMAIL
-        print("\n--- 📝 LOGS DEMAIN ---")
-        for l in tomorrow_logs: print(l)
+        # 5. RÉSULTATS FINAUX
+        print("\n==========================================")
+        print(f"🏁 BILAN : {len(today_results)} auj. / {len(tomorrow_logs)} demain.")
+        print("==========================================")
         
-        if today_results:
-            send_final_email("\n".join(today_results))
-        else: print("\n🏁 Aucun partant aujourd'hui.")
+        print("\n--- 📝 LOGS PARTANTS DEMAIN ---")
+        if tomorrow_logs:
+            for line in tomorrow_logs:
+                print(line)
+        else:
+            print(f"AUCUN PARTANT TROUVÉ POUR DEMAIN ({tomorrow}).")
+        print("-------------------------------\n")
 
-    except Exception as e: print(f"💥 Erreur globale : {e}")
-    finally: driver.quit()
+        if today_results:
+            print(f"📧 Envoi de l'email pour aujourd'hui...")
+            send_final_email("\n".join(today_results))
+
+    except Exception as e:
+        print(f"💥 ERREUR CRITIQUE : {e}")
+    finally:
+        driver.quit()
 
 def send_final_email(content):
     msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_DEST
