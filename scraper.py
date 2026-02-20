@@ -86,7 +86,7 @@ def run_scraper():
             runners = []
             for row in rows:
                 txt = row.text
-                if today in txt or tomorrow in txt:
+                if today in txt:
                     try:
                         link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
                         url = link_el.get_attribute("href")
