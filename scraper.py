@@ -48,111 +48,96 @@ def run_scraper():
     tomorrow_logs = []
 
     try:
-        # 1. CONNEXION
+        # 1. CONNEXION (Ciblage strict via Image 160a3b)
         driver.get(URL_LOGIN)
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
+        print("🔑 Connexion au formulaire 'Mon espace'...")
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#user-login-form input[name='name']"))).send_keys(EMAIL_SENDER)
         driver.find_element(By.CSS_SELECTOR, "#user-login-form input[name='pass']").send_keys(FG_PASSWORD)
-        driver.execute_script("arguments[0].click();", driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']"))
+        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "edit-submit"))
         time.sleep(5)
 
-        # 2. ANALYSE DES ENTRAINEURS
+        # 2. ANALYSE ENTRAINEURS
         for trainer_url in URLS_ENTRAINEURS:
-            print(f"\n--- 🔎 ANALYSE PAGE : {trainer_url} ---")
             driver.get(trainer_url)
-            time.sleep(7)
+            time.sleep(6)
             
             try:
                 t_name = driver.find_element(By.CSS_SELECTOR, "h1, .page-title").text
                 trainer_name = clean_text(t_name).replace("ENTRAINEUR", "").strip()
-                print(f"👤 Entraîneur : {trainer_name}")
             except: trainer_name = "Inconnu"
 
-            rows = driver.find_elements(By.TAG_NAME, "tr")
-            print(f"📊 Nombre de lignes détectées dans le tableau : {len(rows)}")
-
             runners = []
-            for idx, row in enumerate(rows):
+            # On cherche les lignes du tableau
+            rows = driver.find_elements(By.TAG_NAME, "tr")
+            for row in rows:
                 txt = row.text
-                if not txt.strip(): continue
-                
-                # DEBUG : Affiche ce que le robot voit sur chaque ligne
                 if today in txt or tomorrow in txt:
-                    print(f"DEBUG [Ligne {idx}] : {txt}")
                     try:
                         cells = row.find_elements(By.TAG_NAME, "td")
                         horse_raw = cells[4].text.strip()
-                        course_url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
-                        
                         runners.append({
                             'date': today if today in txt else tomorrow,
-                            'horse_full': horse_raw,
+                            'horse_name': horse_raw,
                             'horse_search': clean_text(horse_raw)[:10].lower(),
-                            'url': course_url,
+                            'url': row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href"),
                             'trainer': trainer_name,
-                            'course_name': clean_text(cells[3].text)
+                            'course_name_page_1': clean_text(cells[3].text)
                         })
-                    except Exception as e:
-                        print(f"⚠️ Erreur parsing ligne {idx} : {e}")
+                    except: continue
 
-            # 3. EXTRACTION FICHE COURSE
+            # 3. EXTRACTION DYNAMIQUE (Ciblage via Image 17115d et 171578)
             for r in runners:
-                print(f"\n👉 NAVIGATION : {r['url']}")
+                print(f"\n🌍 Ouverture Course : {r['url']}")
                 driver.get(r['url'])
-                time.sleep(6)
+                time.sleep(5)
                 
                 try:
-                    # DEBUG EN-TETE
-                    header_txt = ""
-                    for selector in [".course-header-info", ".course-date-place", ".course-info"]:
-                        try:
-                            el = driver.find_element(By.CSS_SELECTOR, selector)
-                            if el.is_displayed():
-                                header_txt = el.text
-                                break
-                        except: continue
+                    # HEURE & HIPPODROME (Basé sur image_17115d)
+                    # On cible le paragraphe dans course-detail
+                    header_p = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".course-detail p"))).text
+                    print(f"DEBUG Source Header : {header_p}")
                     
-                    print(f"DEBUG [En-tête Course] : {header_txt.replace(chr(10), ' | ')}")
-                    
-                    match_h = re.search(r'\d{1,2}[h:]\d{2}', header_txt)
+                    # Regex pour l'heure (format 13h40 ou 11h28)
+                    match_h = re.search(r'\d{1,2}h\d{2}', header_p)
                     heure = match_h.group(0) if match_h else "00:00"
-                    hippodrome = clean_text(header_txt.split(",")[-1]) if "," in header_txt else "Inconnu"
+                    
+                    # Hippodrome : tout ce qui est après la dernière virgule
+                    hippodrome = clean_text(header_p.split(",")[-1])
 
-                    # DEBUG TABLEAU PARTANTS
-                    xpath_horse = f"//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
-                    try:
-                        horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
-                        print(f"DEBUG [Ligne Cheval trouvée] : {horse_row.text}")
-                        
-                        num_raw = horse_row.find_elements(By.TAG_NAME, "td")[0].text
-                        num_cheval = "".join(filter(str.isdigit, num_raw)) or "?"
-                    except:
-                        print(f"❌ Impossible de trouver le cheval '{r['horse_search']}' dans le tableau de la course.")
-                        num_cheval = "?"
+                    # NUMÉRO (Basé sur image_171578 - table raceTable)
+                    # On cherche la ligne du cheval dans le tableau spécifique
+                    xpath_horse = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
+                    horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
+                    
+                    # Le N° est dans la 1ère cellule <td> de la ligne
+                    num_cheval = horse_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
+                    num_cheval = "".join(filter(str.isdigit, num_cheval))
 
-                    res_line = f"{r['date']} / {hippodrome} / {heure} / {r['course_name']} / N°{num_cheval} {r['horse_full']} (Entr: {r['trainer']})"
+                    final_line = f"{r['date']} / {hippodrome} / {heure} / {r['course_name_page_1']} / N°{num_cheval} {r['horse_name']} (Entr: {r['trainer']})"
                     
                     if r['date'] == today:
-                        today_results.append(res_line)
+                        today_results.append(final_line)
                     else:
-                        tomorrow_logs.append(res_line)
+                        tomorrow_logs.append(final_line)
+                    
+                    print(f"✅ Extrait : N°{num_cheval} à {heure} à {hippodrome}")
 
                 except Exception as e:
-                    print(f"⚠️ Erreur détails course : {e}")
+                    print(f"⚠️ Erreur sur la fiche course : {str(e)[:50]}")
 
-        # 4. BILAN
+        # 4. LOGS ET EMAIL
         print("\n--- 📝 LOGS DEMAIN ---")
         for l in tomorrow_logs: print(l)
         
         if today_results:
-            print(f"\n📧 Envoi email...")
             send_final_email("\n".join(today_results))
         else: print("\n🏁 Aucun partant aujourd'hui.")
 
-    except Exception as e: print(f"💥 Erreur : {e}")
+    except Exception as e: print(f"💥 Erreur globale : {e}")
     finally: driver.quit()
 
 def send_final_email(content):
