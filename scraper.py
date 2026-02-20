@@ -41,7 +41,6 @@ def run_scraper():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 25)
     
-    # Dates
     today = datetime.now().strftime("%d/%m/%Y")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
     
@@ -67,44 +66,80 @@ def run_scraper():
         
         login_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#user-login-form button[type='submit'], #edit-submit--2")))
         driver.execute_script("arguments[0].click();", login_button)
-        
         time.sleep(7)
-        print(f"🔗 Connecté. URL : {driver.current_url}")
 
-        # 2. ANALYSE DES PAGES
-        for url in URLS_ENTRAINEURS:
-            print(f"🧐 Analyse de l'entraîneur : {url}")
-            driver.get(url)
+        # 2. ANALYSE DES PAGES ENTRAINEURS
+        for trainer_url in URLS_ENTRAINEURS:
+            driver.get(trainer_url)
             time.sleep(8)
 
-            # --- VÉRIFICATION POUR AUJOURD'HUI ---
-            rows_today = driver.find_elements(By.XPATH, f"//tr[contains(., '{today}')]")
-            for row in rows_today:
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) >= 5:
-                    line = f"{today} / {clean_text(cells[1].text)} / {clean_text(cells[2].text)} / {clean_text(cells[3].text)} / {clean_text(cells[4].text)}"
-                    today_results.append(line)
+            try:
+                trainer_name_raw = driver.find_element(By.CSS_SELECTOR, "h1, .page-title").text
+                trainer_name = clean_text(trainer_name_raw).replace("ENTRAINEUR", "").strip()
+            except:
+                trainer_name = "Inconnu"
             
-            # --- VÉRIFICATION POUR DEMAIN (LOGS UNIQUEMENT) ---
-            rows_tomorrow = driver.find_elements(By.XPATH, f"//tr[contains(., '{tomorrow}')]")
-            for row in rows_tomorrow:
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) >= 5:
-                    line = f"{tomorrow} / {clean_text(cells[1].text)} / {clean_text(cells[2].text)} / {clean_text(cells[3].text)} / {clean_text(cells[4].text)}"
-                    tomorrow_logs.append(line)
+            print(f"🧐 Analyse de l'entraîneur : {trainer_name}")
 
-        # 3. AFFICHAGE DES LOGS POUR DEMAIN
-        print("\n--- 📝 LOGS PARTANTS DEMAIN ---")
-        if tomorrow_logs:
-            for log in tomorrow_logs:
-                print(f"[DEMAIN] {log}")
-        else:
-            print(f"Aucun partant détecté pour demain ({tomorrow}).")
-        print("-------------------------------\n")
+            # On récupère d'abord tous les liens de courses pour aujourd'hui et demain
+            # pour éviter les erreurs de navigation pendant la boucle
+            runners_to_check = []
+            rows = driver.find_elements(By.TAG_NAME, "tr")
 
-        # 4. ACTION E-MAIL (AUJOURD'HUI UNIQUEMENT)
+            for row in rows:
+                row_text = row.text
+                if today in row_text or tomorrow in row_text:
+                    try:
+                        # On cherche le lien de la course dans la ligne
+                        link_element = row.find_element(By.CSS_SELECTOR, "td a[href*='/course/']")
+                        course_url = link_element.get_attribute("href")
+                        # On récupère le nom du cheval pour le retrouver sur la page course
+                        horse_name = clean_text(row.find_elements(By.TAG_NAME, "td")[4].text)
+                        
+                        runners_to_check.append({
+                            'date': today if today in row_text else tomorrow,
+                            'horse': horse_name,
+                            'url': course_url,
+                            'trainer': trainer_name,
+                            'hippodrome': clean_text(row.find_elements(By.TAG_NAME, "td")[1].text),
+                            'course_name': clean_text(row.find_elements(By.TAG_NAME, "td")[3].text)
+                        })
+                    except:
+                        continue
+
+            # 3. NAVIGATION VERS CHAQUE COURSE POUR PRÉCISION
+            for item in runners_to_check:
+                print(f"   🔗 Vérification course pour {item['horse']}...")
+                driver.get(item['url'])
+                time.sleep(5)
+                
+                try:
+                    # Extraction de l'heure (souvent en haut de page près du titre)
+                    heure_text = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".course-info-time, .heure"))).text
+                    heure = clean_text(heure_text)
+                    
+                    # Extraction du N° du cheval dans le tableau des partants de la course
+                    # On cherche la ligne qui contient le nom du cheval
+                    horse_row = driver.find_element(By.XPATH, f"//tr[contains(., '{item['horse']}')]")
+                    num_cheval = clean_text(horse_row.find_element(By.CSS_SELECTOR, ".number, td:first-child").text)
+                    
+                    final_line = f"{item['date']} / {item['hippodrome']} / {heure} / {item['course_name']} / N°{num_cheval} {item['horse']} (Entr: {item['trainer']})"
+                    
+                    if item['date'] == today:
+                        today_results.append(final_line)
+                        print(f"   ✅ [AUJOURD'HUI] {final_line}")
+                    else:
+                        tomorrow_logs.append(final_line)
+                        print(f"   📝 [DEMAIN] {final_line}")
+                
+                except Exception as e:
+                    print(f"   ⚠️ Erreur détails course : {e}")
+
+        # 4. FINALISATION
+        print("\n--- 📝 RÉCAPITULATIF DEMAIN ---")
+        for log in tomorrow_logs: print(log)
+        
         if today_results:
-            print(f"📧 Envoi de l'email pour aujourd'hui ({len(today_results)} partants)...")
             send_final_email("\n".join(today_results))
         else:
             print("🏁 Aucun partant pour aujourd'hui.")
