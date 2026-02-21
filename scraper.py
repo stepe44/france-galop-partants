@@ -157,8 +157,8 @@ def run_scraper():
     finally: driver.quit()
 
 def send_final_email(content):
-    #msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_DEST
-    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = "stephane.evain@gmail.com"
+    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_DEST
+    #msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = "stephane.evain@gmail.com"
     msg['Subject'] = f"Partants France Galop - {datetime.now().strftime('%d/%m/%Y')}"
     msg.attach(MIMEText(content, 'plain'))
     try:
