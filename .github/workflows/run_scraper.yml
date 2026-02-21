@@ -2,27 +2,16 @@ name: Automatisation France Galop (Quotidien & Hebdo)
 
 on:
   schedule:
-    # Lancement quotidien (Partants)
+    # 1. Lancement quotidien pour scraper.py (7h00 UTC)
     - cron: '0 7 * * *'
-    # Lancement hebdomadaire (Gain/Top 4 - Lundi)
+    # 2. Lancement hebdomadaire pour gain.py (Lundi 8h00 UTC)
     - cron: '0 8 * * 1'
-  
-  workflow_dispatch:
-    inputs:
-      script_to_run:
-        description: 'Choisissez le script à exécuter manuellement :'
-        required: true
-        default: 'scraper.py'
-        type: choice
-        options:
-          - scraper.py
-          - gain.py
-          - les_deux
+  workflow_dispatch: # Permet de lancer manuellement depuis l'onglet Actions
 
 jobs:
   france-galop-tasks:
     runs-on: ubuntu-latest
-    environment: login
+    environment: login # Indispensable pour accéder à vos secrets
     
     steps:
       - name: Checkout du code
@@ -38,11 +27,7 @@ jobs:
           pip install selenium webdriver-manager
 
       - name: Exécution du Scraper Quotidien (Partants)
-        # Se lance si : c'est l'heure du cron quotidien OU si choisi manuellement (seul ou avec l'autre)
-        if: |
-          github.event.schedule == '0 7 * * *' || 
-          github.event.inputs.script_to_run == 'scraper.py' || 
-          github.event.inputs.script_to_run == 'les_deux'
+        if: github.event.schedule == '0 7 * * *' || github.event_name == 'workflow_dispatch'
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -51,11 +36,7 @@ jobs:
         run: python scraper.py
 
       - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
-        # Se lance si : c'est l'heure du cron hebdomadaire OU si choisi manuellement (seul ou avec l'autre)
-        if: |
-          github.event.schedule == '0 8 * * 1' || 
-          github.event.inputs.script_to_run == 'gain.py' || 
-          github.event.inputs.script_to_run == 'les_deux'
+        if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -63,10 +44,12 @@ jobs:
           EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
         run: python gain.py
 
-      - name: Sauvegarder les captures d'écran (Debug)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: selenium-screenshots
-          path: debug_*.png
-          retention-days: 5
+     ## - name: Sauvegarder les captures d'écran (Debug)
+#        uses: actions/upload-artifact@v4
+#        if: always() # S'exécute même si un script échoue
+#        with:
+#          name: selenium-screenshots
+#          path: debug_*.png
+#          retention-days: 5
+
+          
