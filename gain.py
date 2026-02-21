@@ -49,7 +49,7 @@ def run_scraper_history():
     
     # Fenêtre de 7 jours
     today = datetime.now()
-    start_date = today - timedelta(days=30)
+    start_date = today - timedelta(days=7)
     
     final_report = []
 
