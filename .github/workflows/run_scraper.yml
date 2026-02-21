@@ -1,20 +1,34 @@
-name: Check Partants Automatique
+name: Automatisation France Galop (Quotidien & Hebdo)
 
 on:
   schedule:
-    # Lancement tous les matins à 7h00 UTC (8h00 ou 9h00 en France)
+    # Lancement quotidien (Partants)
     - cron: '0 7 * * *'
-  workflow_dispatch: # Permet un lancement manuel
+    # Lancement hebdomadaire (Gain/Top 4 - Lundi)
+    - cron: '0 8 * * 1'
+  
+  workflow_dispatch:
+    inputs:
+      script_to_run:
+        description: 'Choisissez le script à exécuter manuellement :'
+        required: true
+        default: 'scraper.py'
+        type: choice
+        options:
+          - scraper.py
+          - gain.py
+          - les_deux
 
 jobs:
-  build:
+  france-galop-tasks:
     runs-on: ubuntu-latest
-    environment: login # Lien avec tes secrets
+    environment: login
+    
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Installation de Python
+      - name: Installation de Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -23,7 +37,12 @@ jobs:
         run: |
           pip install selenium webdriver-manager
 
-      - name: Exécution du script
+      - name: Exécution du Scraper Quotidien (Partants)
+        # Se lance si : c'est l'heure du cron quotidien OU si choisi manuellement (seul ou avec l'autre)
+        if: |
+          github.event.schedule == '0 7 * * *' || 
+          github.event.inputs.script_to_run == 'scraper.py' || 
+          github.event.inputs.script_to_run == 'les_deux'
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -31,10 +50,23 @@ jobs:
           EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
         run: python scraper.py
 
-      - name: Sauvegarder les captures d'écran
+      - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
+        # Se lance si : c'est l'heure du cron hebdomadaire OU si choisi manuellement (seul ou avec l'autre)
+        if: |
+          github.event.schedule == '0 8 * * 1' || 
+          github.event.inputs.script_to_run == 'gain.py' || 
+          github.event.inputs.script_to_run == 'les_deux'
+        env:
+          FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
+        run: python gain.py
+
+      - name: Sauvegarder les captures d'écran (Debug)
         uses: actions/upload-artifact@v4
-        if: always() # <--- FORCE le téléchargement même si le script a réussi
+        if: always()
         with:
           name: selenium-screenshots
           path: debug_*.png
-          retention-days: 5 # Optionnel : garde les images 5 jours
+          retention-days: 5
