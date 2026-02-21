@@ -15,21 +15,20 @@ from email.mime.multipart import MIMEMultipart
 
 # --- CONFIGURATION ---
 URL_LOGIN = "https://www.france-galop.com/fr/login"
-# URLs ciblées sur les dernières courses
 URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/Z1FxYXQ3cFJyM0ZlUitJQTlmUTNiUT09#dernieres-courses",
     "https://www.france-galop.com/fr/entraineur/U0VNb0JtQlZ1bUphYndFTnJjSzg4dz09#dernieres-courses"
 ]
 
+# Variables d'environnement
 FG_PASSWORD = os.getenv("FG_PASSWORD")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_DEST = os.getenv("EMAIL_DEST")
+EMAIL_DEST = os.getenv("EMAIL_DEST", "votre.email@gmail.com") 
 
 def clean_text(text):
     if not text: return "N/A"
-    cleaned = re.sub(r'[^a-zA-Z0-9/:\.€ ]', '', text)
-    return " ".join(cleaned.split()).strip()
+    return " ".join(text.split()).strip()
 
 def parse_date(date_str):
     """Convertit une chaîne DD/MM/YYYY en objet datetime."""
@@ -44,14 +43,13 @@ def run_scraper_history():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 20)
+    wait = WebDriverWait(driver, 15)
     
-    # 1. Calcul de la fenêtre [J-7 ; J]
-    today = datetime.now().replace(hour=23, minute=59)
-    start_date = (today - timedelta(days=7)).replace(hour=0, minute=0)
+    # Fenêtre de 7 jours
+    today = datetime.now()
+    start_date = today - timedelta(days=7)
     
     final_report = []
 
@@ -59,68 +57,63 @@ def run_scraper_history():
         # --- CONNEXION ---
         driver.get(URL_LOGIN)
         try:
-            wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
+            # Acceptation des cookies si présents
+            cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+            cookie_btn.click()
         except: pass
 
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#user-login-form input[name='name']"))).send_keys(EMAIL_SENDER)
-        driver.find_element(By.CSS_SELECTOR, "#user-login-form input[name='pass']").send_keys(FG_PASSWORD)
-        login_btn = driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']")
-        driver.execute_script("arguments[0].click();", login_btn)
-        time.sleep(5)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='name']"))).send_keys(EMAIL_SENDER)
+        driver.find_element(By.CSS_SELECTOR, "input[name='pass']").send_keys(FG_PASSWORD)
+        driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']").click()
+        time.sleep(3)
 
         # --- ANALYSE DES ENTRAINEURS ---
         for trainer_url in URLS_ENTRAINEURS:
             print(f"Analyse de l'entraîneur : {trainer_url}")
             driver.get(trainer_url)
-            time.sleep(5)
             
+            # Attente du chargement du tableau spécifique
             try:
-                trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
+                wait.until(EC.presence_of_element_located((By.ID, "dernieres-courses")))
+                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1.page-header").text.strip()
             except:
                 trainer_name = "Inconnu"
 
-            # On cherche le tableau des dernières courses
-            # Généralement situé dans une div spécifique ou identifié par sa structure
-            rows = driver.find_elements(By.CSS_SELECTOR, "table.views-table tr, .last-races-table tr")
-            
-            if not rows:
-                # Fallback si le sélecteur spécifique échoue, on prend tous les TR
-                rows = driver.find_elements(By.TAG_NAME, "row") 
+            # Sélection des lignes du tableau "Dernières courses"
+            # On cible précisément le tbody de la section concernée
+            rows = driver.find_elements(By.CSS_SELECTOR, "#dernieres-courses table tbody tr")
 
             for row in rows:
                 cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) < 5: continue
+                if len(cells) < 12: continue # Sécurité sur la structure
                 
-                # Extraction des données par index (ajustable selon le DOM exact de France Galop)
-                raw_date = cells[0].text.strip()
-                horse_name = clean_text(cells[1].text)
-                race_name = clean_text(cells[2].text)
-                place = clean_text(cells[3].text)
-                prize = clean_text(cells[4].text) if len(cells) > 4 else "N/A"
-                odds = clean_text(cells[5].text) if len(cells) > 5 else "N/A"
+                # Correction des index basée sur le code source
+                raw_date = cells[0].text.strip()       # Index 0: Date
+                place = cells[1].text.strip()          # Index 1: Place
+                horse_name = clean_text(cells[2].text) # Index 2: Cheval
+                hippodrome = clean_text(cells[8].text) # Index 8: Hippodrome
+                prize = clean_text(cells[11].text)     # Index 11: Gain
 
-                # 3. Filtrage Temporel
+                # Filtrage Temporel
                 race_dt = parse_date(raw_date)
                 if race_dt and start_date <= race_dt <= today:
                     
-                    # 4. Filtrage Place (1er, 2e, 3e, 4e)
-                    # On cherche si le chiffre 1, 2, 3 ou 4 est présent dans la cellule place
-                    match_place = re.search(r'([1-4])', place)
+                    # Filtrage Place (1er à 4e)
+                    # re.search capture le chiffre, ignorant les mentions comme "AR" ou "T"
+                    match_place = re.search(r'^([1-4])$', place)
                     
                     if match_place:
-                        rank_found = match_place.group(1)
-                        # 9. Construction de la ligne
-                        line = f"Entraîneur - cheval : {trainer_name} - {horse_name} - {raw_date} - {race_name} - {rank_found}e - {prize} - {odds}"
+                        rank = match_place.group(1)
+                        line = f"[{trainer_name}] {horse_name} - {raw_date} - {hippodrome} - {rank}e - {prize}€"
                         final_report.append(line)
-                        print(f"  ✅ Retenu : {horse_name} ({rank_found}e)")
+                        print(f"  ✅ Retenu : {horse_name} ({rank}e)")
 
-        # 10. Envoi de l'email
+        # --- ENVOI DE L'EMAIL ---
         if final_report:
-            content = "\n".join(final_report)
-            send_final_email(content)
-            print("\n📧 Email envoyé avec succès.")
+            send_final_email("\n".join(final_report))
+            print(f"\n📧 Email envoyé avec {len(final_report)} performance(s).")
         else:
-            print("\nℹ️ Aucune performance trouvée dans les critères.")
+            print("\nℹ️ Aucune performance de top 4 trouvée sur les 7 derniers jours.")
 
     except Exception as e:
         print(f"💥 Erreur globale : {e}")
