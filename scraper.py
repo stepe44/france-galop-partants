@@ -82,11 +82,20 @@ def run_scraper():
             time.sleep(8)
             check_session(driver)
 
-            rows = driver.find_elements(By.TAG_NAME, "tr")
+            # --- MODIFICATION : Ciblage exclusif du tableau des partants ---
+            try:
+                # Utilisation de l'ID spécifique identifié dans le code source
+                partants_table = wait.until(EC.presence_of_element_located((By.ID, "partants_entraineur")))
+                # On ne prend que les lignes du corps du tableau (ignore l'en-tête)
+                rows = partants_table.find_elements(By.CSS_SELECTOR, "tbody tr")
+            except:
+                print(f"⚠️ Aucun tableau de partants trouvé sur {trainer_url}")
+                rows = []
+
             runners = []
             for row in rows:
                 txt = row.text
-                if today in txt:
+                if today in txt or tomorrow in txt:
                     try:
                         link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
                         url = link_el.get_attribute("href")
@@ -115,21 +124,17 @@ def run_scraper():
                     
                     for p in paragraphs:
                         p_txt = p.text.strip()
-                        # On cible la ligne contenant l'année 2026
                         if "2026" in p_txt and "(" in p_txt:
                             print(f"      📝 Info Header : {p_txt}")
                             
-                            # --- MODIFICATION CIBLÉE : EXTRACTION DU PREMIER CHIFFRE ---
                             match_n = re.search(r'(\d+)', p_txt)
                             if match_n: n_course = match_n.group(1)
                             
-                            # Extraction Heure et Hippodrome
                             match_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
                             if match_h: heure = match_h.group(1)
                             if "," in p_txt: hippodrome = clean_text(p_txt.split(",")[-1])
                             break
 
-                    # Extraction du N° du cheval dans raceTable
                     xpath_horse = f"//div[contains(@class, 'raceTable')]//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['horse_search']}')]"
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
                     num_cheval = "".join(filter(str.isdigit, horse_row.find_elements(By.TAG_NAME, "td")[0].text))
@@ -152,7 +157,8 @@ def run_scraper():
     finally: driver.quit()
 
 def send_final_email(content):
-    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_DEST
+    #msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_DEST
+    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = "stephane.evain@gmail.com"
     msg['Subject'] = f"Partants France Galop - {datetime.now().strftime('%d/%m/%Y')}"
     msg.attach(MIMEText(content, 'plain'))
     try:
