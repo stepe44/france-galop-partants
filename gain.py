@@ -123,8 +123,7 @@ def run_scraper_history():
 def send_final_email(content):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
-    #msg['To'] = EMAIL_DEST
-    msg['To'] = "stephane.evain@gmail.com"
+    msg['To'] = EMAIL_DEST
     msg['Subject'] = f"Top Performances 7j - France Galop ({datetime.now().strftime('%d/%m/%Y')})"
     
     body = f"Voici les chevaux classés dans les 4 premiers sur les 7 derniers jours :\n\n{content}"
