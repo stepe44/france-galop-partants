@@ -24,7 +24,8 @@ jobs:
 
       - name: Installation des dépendances
         run: |
-          pip install selenium webdriver-manager
+          python -m pip install --upgrade pip
+          pip install selenium webdriver-manager requests
 
       - name: Exécution du Scraper Quotidien (Partants)
         if: github.event.schedule == '0 7 * * *' || github.event_name == 'workflow_dispatch'
