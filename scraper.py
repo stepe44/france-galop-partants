@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import requests
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -9,11 +10,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
-# --- CONFIGURATION DES SECRETS ---
+# --- CONFIGURATION DES SECRETS (À configurer sur GitHub) ---
 URL_LOGIN = "https://www.france-galop.com/fr/login"
 URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/Z1FxYXQ3cFJyM0ZlUitJQTlmUTNiUT09#partants",
@@ -21,29 +19,40 @@ URLS_ENTRAINEURS = [
 ]
 
 FG_PASSWORD = os.getenv("FG_PASSWORD")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_DEST = os.getenv("EMAIL_DEST")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER") # Utilisé pour le login France Galop
+# Nouvelle variable pour l'URL complète Green-API (incluant l'ID instance et le Token)
+GREEN_API_URL = os.getenv("GREEN_API_URL") 
 
 def clean_text(text):
     if not text: return ""
     cleaned = re.sub(r'[^a-zA-Z0-9/:\. ]', '', text)
     return " ".join(cleaned.split()).strip()
 
-def save_screenshot(driver, label):
-    timestamp = datetime.now().strftime("%Hh%M_%S")
-    filename = f"debug_{label}_{timestamp}.png"
-    driver.save_screenshot(filename)
-    print(f"📸 Screenshot : {filename}")
-
 def check_session(driver):
     try:
         body_class = driver.find_element(By.TAG_NAME, "body").get_attribute("class")
         mon_espace = driver.find_elements(By.CSS_SELECTOR, "#block-francegalop-account-menu .menu-user")
         is_logged = "user-logged-in" in body_class and len(mon_espace) > 0
-        print(f"--- 🔒 État Session : {'CONNECTÉ' if is_logged else 'DÉCONNECTÉ'} sur {driver.current_url} ---")
         return is_logged
     except: return False
+
+def send_whatsapp_notification(content):
+    """Envoie le rapport via Green-API"""
+    if not GREEN_API_URL:
+        print("❌ Erreur : GREEN_API_URL n'est pas configurée.")
+        return
+
+    payload = {
+        "chatId": "33678723278-1540128478@g.us",
+        "message": content
+    }
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(GREEN_API_URL, json=payload, headers=headers)
+        print(f"📲 Notification WhatsApp envoyée ! Statut : {response.status_code}")
+    except Exception as e:
+        print(f"❌ Erreur lors de l'envoi WhatsApp : {e}")
 
 def run_scraper():
     chrome_options = Options()
@@ -82,11 +91,8 @@ def run_scraper():
             time.sleep(8)
             check_session(driver)
 
-            # --- MODIFICATION : Ciblage exclusif du tableau des partants ---
             try:
-                # Utilisation de l'ID spécifique identifié dans le code source
                 partants_table = wait.until(EC.presence_of_element_located((By.ID, "partants_entraineur")))
-                # On ne prend que les lignes du corps du tableau (ignore l'en-tête)
                 rows = partants_table.find_elements(By.CSS_SELECTOR, "tbody tr")
             except:
                 print(f"⚠️ Aucun tableau de partants trouvé sur {trainer_url}")
@@ -113,11 +119,10 @@ def run_scraper():
                         })
                     except: continue
 
-            # 3. EXTRACTION DÉTAILLÉE SUR LA FICHE COURSE
+            # 3. EXTRACTION DÉTAILLÉE
             for r in runners:
                 driver.get(r['url'])
                 time.sleep(6)
-                
                 try:
                     paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
                     heure, hippodrome, n_course = "00:00", "Inconnu", "?"
@@ -125,11 +130,8 @@ def run_scraper():
                     for p in paragraphs:
                         p_txt = p.text.strip()
                         if "2026" in p_txt and "(" in p_txt:
-                            print(f"      📝 Info Header : {p_txt}")
-                            
                             match_n = re.search(r'(\d+)', p_txt)
                             if match_n: n_course = match_n.group(1)
-                            
                             match_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
                             if match_h: heure = match_h.group(1)
                             if "," in p_txt: hippodrome = clean_text(p_txt.split(",")[-1])
@@ -139,31 +141,25 @@ def run_scraper():
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
                     num_cheval = "".join(filter(str.isdigit, horse_row.find_elements(By.TAG_NAME, "td")[0].text))
 
-                    final_line = f"{r['date']} / {hippodrome} / {n_course} / {heure} / {r['course_simple']} / N°{num_cheval} {r['horse']} (Entr: {r['trainer']})"
+                    final_line = f"🏇 {r['date']} | {hippodrome} | C{n_course} à {heure}\n   {r['course_simple']}\n   N°{num_cheval} {r['horse']} ({r['trainer']})"
                     
                     if r['date'] == today: today_results.append(final_line)
                     else: tomorrow_logs.append(final_line)
-                    print(f"      ✅ Trouvé : Course {n_course} à {heure}")
 
                 except Exception as e:
-                    print(f"      ⚠️ Échec extraction : {str(e)[:50]}")
+                    print(f"⚠️ Échec extraction : {str(e)[:50]}")
 
-        # 4. RAPPORTS
-        print(f"\n--- 📝 LOGS PARTANTS DEMAIN ({tomorrow}) ---")
-        for line in tomorrow_logs: print(line)
-        if today_results: send_final_email("\n".join(today_results))
+        # 4. ENVOI DES RAPPORTS
+        if today_results:
+            header = f"📍 *PARTANTS DU JOUR ({today})*\n\n"
+            send_whatsapp_notification(header + "\n\n".join(today_results))
+        
+        if tomorrow_logs:
+            print(f"--- 📝 LOGS DEMAIN ({tomorrow}) ---")
+            for line in tomorrow_logs: print(line)
 
     except Exception as e: print(f"💥 Erreur globale : {e}")
     finally: driver.quit()
 
-def send_final_email(content):
-    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_DEST
-    #msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = "stephane.evain@gmail.com"
-    msg['Subject'] = f"Partants France Galop - {datetime.now().strftime('%d/%m/%Y')}"
-    msg.attach(MIMEText(content, 'plain'))
-    try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as s:
-            s.starttls(); s.login(EMAIL_SENDER, GMAIL_APP_PASSWORD); s.send_message(msg)
-    except: pass
-
-if __name__ == "__main__": run_scraper()
+if __name__ == "__main__":
+    run_scraper()
