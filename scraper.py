@@ -2,7 +2,6 @@ import os
 import re
 import time
 import requests
-import traceback
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -12,27 +11,32 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (Identique à votre PJ + Green-API) ---
 URL_LOGIN = "https://www.france-galop.com/fr/login"
 URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/Z1FxYXQ3cFJyM0ZlUitJQTlmUTNiUT09#partants",
     "https://www.france-galop.com/fr/entraineur/U0VNb0JtQlZ1bUphYndFTnJjSzg4dz09#partants"
 ]
 
-# Variables d'environnement GitHub
 FG_PASSWORD = os.getenv("FG_PASSWORD")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-GREEN_API_URL = os.getenv("GREEN_API_URL")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")  # Utilisé pour le login France Galop
+GREEN_API_URL = os.getenv("GREEN_API_URL") # URL complète Green-API fournie dans vos secrets
 
 def clean_text(text):
     if not text: return ""
     cleaned = re.sub(r'[^a-zA-Z0-9/:\. ]', '', text)
     return " ".join(cleaned.split()).strip()
 
+def save_screenshot(driver, label):
+    timestamp = datetime.now().strftime("%Hh%M_%S")
+    filename = f"debug_{label}_{timestamp}.png"
+    driver.save_screenshot(filename)
+    print(f"📸 Screenshot : {filename}")
+
 def send_whatsapp_notification(content):
-    """Envoie le message via Green-API"""
+    """Remplace l'envoi d'email par Green-API"""
     if not GREEN_API_URL:
-        print("❌ Erreur : GREEN_API_URL non configurée dans les secrets.")
+        print("❌ Erreur : GREEN_API_URL non configurée.")
         return
 
     payload = {
@@ -42,22 +46,21 @@ def send_whatsapp_notification(content):
     headers = {"Content-Type": "application/json"}
 
     try:
-        response = requests.post(GREEN_API_URL, json=payload, headers=headers, timeout=10)
-        print(f"📲 Statut Green-API : {response.status_code} - {response.text}")
+        response = requests.post(GREEN_API_URL, json=payload, headers=headers, timeout=15)
+        print(f"📲 Statut WhatsApp : {response.status_code}")
     except Exception as e:
         print(f"❌ Échec envoi WhatsApp : {e}")
 
 def run_scraper():
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new") 
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 25)
     
     today = datetime.now().strftime("%d/%m/%Y")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
@@ -67,26 +70,20 @@ def run_scraper():
     seen_course_urls = set()
 
     try:
-        # 1. CONNEXION
-        print("🚀 Connexion à France Galop...")
+        # 1. CONNEXION (Logique exacte de votre PJ)
         driver.get(URL_LOGIN)
-        
-        # Acceptation cookies
         try:
-            cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
-            cookie_btn.click()
+            wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        # Login
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='name']"))).send_keys(EMAIL_SENDER)
-        driver.find_element(By.CSS_SELECTOR, "input[name='pass']").send_keys(FG_PASSWORD)
-        login_btn = driver.find_element(By.CSS_SELECTOR, "button[id='edit-submit']") # Sélecteur ID plus stable
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#user-login-form input[name='name']"))).send_keys(EMAIL_SENDER)
+        driver.find_element(By.CSS_SELECTOR, "#user-login-form input[name='pass']").send_keys(FG_PASSWORD)
+        login_btn = driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']")
         driver.execute_script("arguments[0].click();", login_btn)
         time.sleep(7)
 
         # 2. ANALYSE ENTRAINEURS
         for trainer_url in URLS_ENTRAINEURS:
-            print(f"🧐 Analyse : {trainer_url}")
             driver.get(trainer_url)
             time.sleep(8)
 
@@ -94,10 +91,10 @@ def run_scraper():
                 partants_table = wait.until(EC.presence_of_element_located((By.ID, "partants_entraineur")))
                 rows = partants_table.find_elements(By.CSS_SELECTOR, "tbody tr")
             except:
-                print(f"⚠️ Aucun tableau de partants trouvé.")
+                print(f"⚠️ Aucun tableau trouvé sur {trainer_url}")
                 continue
 
-            runners_to_process = []
+            runners = []
             trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
 
             for row in rows:
@@ -110,7 +107,7 @@ def run_scraper():
                         seen_course_urls.add(url)
 
                         cells = row.find_elements(By.TAG_NAME, "td")
-                        runners_to_process.append({
+                        runners.append({
                             'date': today if today in txt else tomorrow,
                             'horse': clean_text(cells[0].text),
                             'horse_search': clean_text(cells[0].text)[:10].lower(),
@@ -121,10 +118,9 @@ def run_scraper():
                     except: continue
 
             # 3. EXTRACTION DÉTAILLÉE
-            for r in runners_to_process:
-                print(f"   🔎 Détails pour : {r['horse']}")
+            for r in runners:
                 driver.get(r['url'])
-                time.sleep(5)
+                time.sleep(6)
                 
                 try:
                     paragraphs = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
@@ -144,29 +140,28 @@ def run_scraper():
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
                     num_cheval = "".join(filter(str.isdigit, horse_row.find_elements(By.TAG_NAME, "td")[0].text))
 
+                    # Formatage enrichi pour WhatsApp
                     final_line = f"🏇 *{r['horse']}* (N°{num_cheval})\n📍 {hippodrome} - C{n_course} à {heure}\n📝 {r['course_simple']}\n👤 Entr: {r['trainer']}"
                     
                     if r['date'] == today: today_results.append(final_line)
                     else: tomorrow_logs.append(final_line)
+                    print(f"      ✅ OK : {r['horse']}")
 
                 except Exception as e:
-                    print(f"      ⚠️ Erreur sur la fiche course : {str(e)[:50]}")
+                    print(f"      ⚠️ Erreur extraction : {str(e)[:30]}")
 
-        # 4. RAPPORTS
+        # 4. ENVOI DES RAPPORTS
         if today_results:
-            header = f"✅ *PARTANTS DU JOUR ({today})*\n\n"
-            send_whatsapp_notification(header + "\n\n---\n\n".join(today_results))
-        else:
-            print("✉️ Aucun partant trouvé pour aujourd'hui.")
+            message_final = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
+            send_whatsapp_notification(message_final)
+        
+        print(f"\n--- 📝 LOGS DEMAIN ({tomorrow}) ---")
+        for line in tomorrow_logs: print(line)
 
-        if tomorrow_logs:
-            print(f"\n--- 📝 LOGS DEMAIN ({tomorrow}) ---")
-            for line in tomorrow_logs: print(line)
-
-    except Exception as e:
+    except Exception as e: 
         print(f"💥 Erreur globale : {e}")
-        traceback.print_exc()
-    finally:
+        save_screenshot(driver, "global_error")
+    finally: 
         driver.quit()
 
 if __name__ == "__main__":
