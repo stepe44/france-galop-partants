@@ -11,7 +11,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- CONFIGURATION (Identique à votre PJ + Green-API) ---
+# --- CONFIGURATION ---
 URL_LOGIN = "https://www.france-galop.com/fr/login"
 URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/Z1FxYXQ3cFJyM0ZlUitJQTlmUTNiUT09#partants",
@@ -19,8 +19,8 @@ URLS_ENTRAINEURS = [
 ]
 
 FG_PASSWORD = os.getenv("FG_PASSWORD")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")  # Utilisé pour le login France Galop
-GREEN_API_URL = os.getenv("GREEN_API_URL") # URL complète Green-API fournie dans vos secrets
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+GREEN_API_URL = os.getenv("GREEN_API_URL")
 
 def clean_text(text):
     if not text: return ""
@@ -34,7 +34,6 @@ def save_screenshot(driver, label):
     print(f"📸 Screenshot : {filename}")
 
 def send_whatsapp_notification(content):
-    """Remplace l'envoi d'email par Green-API"""
     if not GREEN_API_URL:
         print("❌ Erreur : GREEN_API_URL non configurée.")
         return
@@ -67,10 +66,10 @@ def run_scraper():
     
     today_results = []
     tomorrow_logs = []
-    seen_course_urls = set()
+    seen_runners = set() # CHANGEMENT : On stocke les couples cheval+course
 
     try:
-        # 1. CONNEXION (Logique exacte de votre PJ)
+        # 1. CONNEXION
         driver.get(URL_LOGIN)
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
@@ -101,16 +100,20 @@ def run_scraper():
                 txt = row.text
                 if today in txt or tomorrow in txt:
                     try:
+                        cells = row.find_elements(By.TAG_NAME, "td")
+                        horse_name = clean_text(cells[0].text)
                         link_el = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']")
                         url = link_el.get_attribute("href")
-                        if url in seen_course_urls: continue
-                        seen_course_urls.add(url)
+                        
+                        # CHANGEMENT : Unicité basée sur le nom du cheval ET l'URL de la course
+                        runner_id = f"{horse_name}_{url}"
+                        if runner_id in seen_runners: continue
+                        seen_runners.add(runner_id)
 
-                        cells = row.find_elements(By.TAG_NAME, "td")
                         runners.append({
                             'date': today if today in txt else tomorrow,
-                            'horse': clean_text(cells[0].text),
-                            'horse_search': clean_text(cells[0].text)[:10].lower(),
+                            'horse': horse_name,
+                            'horse_search': horse_name[:10].lower(),
                             'url': url,
                             'trainer': trainer_name,
                             'course_simple': clean_text(cells[4].text)
@@ -140,7 +143,6 @@ def run_scraper():
                     horse_row = wait.until(EC.presence_of_element_located((By.XPATH, xpath_horse)))
                     num_cheval = "".join(filter(str.isdigit, horse_row.find_elements(By.TAG_NAME, "td")[0].text))
 
-                    # Formatage enrichi pour WhatsApp
                     final_line = f"🏇 *{r['horse']}* (N°{num_cheval})\n📍 {hippodrome} - C{n_course} à {heure}\n📝 {r['course_simple']}\n👤 Entr: {r['trainer']}"
                     
                     if r['date'] == today: today_results.append(final_line)
