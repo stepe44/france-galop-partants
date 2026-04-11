@@ -85,41 +85,55 @@ def run_scraper():
         log("🌐 Accès à France Galop...")
         driver.get(URL_HOME)
         
-        # Cookies
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        # Clic Connexion
         log("🔑 Ouverture du portail...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # Étape 1 : Email
+        # --- ÉTAPE 1 : EMAIL (ROBUSTE) ---
         log("📧 Saisie de l'identifiant...")
-        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email")))
+        email_field = wait.until(EC.element_to_be_clickable((By.ID, "email")))
+        email_field.click() # Focus
+        time.sleep(1)
+        email_field.clear()
         email_field.send_keys(EMAIL_SENDER)
-        driver.save_screenshot("debug_1_email_entered.png") # Capture avant validation
-        email_field.send_keys(Keys.ENTER)
-        time.sleep(2)
+        
+        # Vérification JS pour GitHub Actions
+        val = driver.execute_script("return document.getElementById('email').value;")
+        if not val:
+            driver.execute_script(f"document.getElementById('email').value = '{EMAIL_SENDER}';")
+        
+        driver.save_screenshot("debug_1_email_entered.png")
+        btn_next = driver.find_element(By.ID, "next")
+        driver.execute_script("arguments[0].click();", btn_next)
+        time.sleep(3)
 
-        # Étape 2 : Password
+        # --- ÉTAPE 2 : PASSWORD ---
         log("🔒 Saisie du mot de passe...")
         try:
             pwd_field = wait.until(EC.visibility_of_element_located((By.ID, "password")))
+            pwd_field.click()
             pwd_field.send_keys(FG_PASSWORD)
-            driver.save_screenshot("debug_2_password_entered.png") # Capture avant validation
-            pwd_field.send_keys(Keys.ENTER)
+            
+            # Vérification JS
+            val_pwd = driver.execute_script("return document.getElementById('password').value;")
+            if not val_pwd:
+                driver.execute_script(f"document.getElementById('password').value = '{FG_PASSWORD}';")
+                
+            driver.save_screenshot("debug_2_password_entered.png")
+            btn_login = driver.find_element(By.ID, "next")
+            driver.execute_script("arguments[0].click();", btn_login)
         except Exception:
-            log("⚠️ Champ password introuvable. Capture d'écran effectuée.")
-            driver.save_screenshot("debug_error_no_password_field.png")
+            driver.save_screenshot("debug_error_password.png")
             raise
 
-        # Vérification finale
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
         log("✅ Authentification réussie.")
 
-        # Suite du script pour les entraîneurs...
+        # --- SCRAPPING ENTRAINEURS ---
         for trainer_url in URLS_ENTRAINEURS:
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
@@ -160,6 +174,8 @@ def run_scraper():
         if today_results:
             final_msg = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
             send_whatsapp_notification(final_msg)
+        else:
+            log("📝 Aucun partant aujourd'hui.")
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
