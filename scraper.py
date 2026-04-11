@@ -87,14 +87,13 @@ def run_scraper():
         
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
-            log("🍪 Cookies acceptés.")
         except: pass
 
         log("🔑 Ouverture du portail de connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- ÉTAPE 1 : EMAIL (SIMULATION HUMAINE CARACTÈRE PAR CARACTÈRE) ---
+        # --- ÉTAPE 1 : EMAIL ---
         log("📧 Saisie de l'identifiant...")
         time.sleep(5)
         email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
@@ -102,9 +101,8 @@ def run_scraper():
         email_el.clear()
         for char in EMAIL_SENDER:
             email_el.send_keys(char)
-            time.sleep(0.1) # Simule une vitesse de frappe humaine
+            time.sleep(0.1)
             
-        # Déclenchement forcé de la validation Azure (Crucial pour éviter l'erreur "Enter a valid email address")
         driver.execute_script("""
             arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
             arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
@@ -112,8 +110,6 @@ def run_scraper():
         """, email_el)
         
         time.sleep(1)
-        driver.save_screenshot("step1_email_ready.png")
-        
         btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next, #next")
         driver.execute_script("arguments[0].click();", btn_next)
         
@@ -128,23 +124,25 @@ def run_scraper():
             arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
         """, pwd_el)
         
-        driver.save_screenshot("step2_password_ready.png")
         btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        log("⏳ Attente de redirection vers France Galop...")
+        log("⏳ Attente de redirection vers France Galop (10s)...")
         time.sleep(10)
 
-        # --- ÉTAPE 3 : SCRAPING DES PARTANTS ---
-        for trainer_url in URLS_ENTRAINEURS:
+        # --- ÉTAPE 3 : SCRAPING ---
+        for i, trainer_url in enumerate(URLS_ENTRAINEURS):
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:20]}")
             driver.get(trainer_url)
             time.sleep(5)
+            
+            # --- CAPTURE D'ÉCRAN DE CONTRÔLE ---
+            driver.save_screenshot(f"partants_check_trainer_{i}.png")
+            log(f"📸 Capture d'écran effectuée : partants_check_trainer_{i}.png")
 
             rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
             if not rows:
                 log(f"⚠️ Aucun tableau pour {trainer_url}. Vérification de la session...")
-                driver.save_screenshot("debug_scraping_empty.png")
                 continue
 
             trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
@@ -188,7 +186,7 @@ def run_scraper():
 
     except Exception as e:
         log(f"💥 ERREUR CRITIQUE : {e}")
-        driver.save_screenshot("debug_fatal_error.png")
+        driver.save_screenshot("partants_error_final.png")
     finally:
         driver.quit()
         log("🏁 Fin de session.")
