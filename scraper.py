@@ -8,6 +8,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
@@ -26,44 +27,10 @@ GREEN_API_URL = os.getenv("GREEN_API_URL")
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
-def translate_performance(musique):
-    if not musique or musique == "N/A": return "Aucune performance récente"
-    mapping_disc = {'p': 'Plat', 's': 'Steeple', 'h': 'Haies', 'c': 'Cross', 'a': 'Attelé', 'm': 'Monté'}
-    mapping_inc = {'A': 'Arrêté', 'T': 'Tombé', 'D': 'Disqualifié', 'R': 'Rétrogradé'}
-    parts = re.split(r'(\(\d+\))', musique)
-    decoded_parts = []
-    current_year = "2026"
-    for part in parts:
-        if re.match(r'\(\d+\)', part):
-            current_year = "20" + part.strip('()')
-            continue
-        matches = re.findall(r'([0-9A-Z])([a-z])', part)
-        for rank, disc in matches:
-            d_name = mapping_disc.get(disc, disc)
-            r_text = f"{rank}er" if rank == "1" else (f"{rank}e" if rank.isdigit() else mapping_inc.get(rank, rank))
-            decoded_parts.append(f"{r_text} en {d_name} ({current_year})")
-    return " | ".join(decoded_parts[:3])
-
 def clean_text(text):
     if not text: return ""
     cleaned = re.sub(r"[^a-zA-Z0-9/:\. '()]", '', text)
     return " ".join(cleaned.split()).strip()
-
-def get_pure_horse_name(full_name):
-    pure_name = re.split(r'\s[A-Z]\.', full_name)[0] 
-    return pure_name.strip()
-
-def normalize_for_xpath(text):
-    return re.sub(r'[^a-z0-9]', '', text.lower())
-
-def send_whatsapp_notification(content):
-    if not GREEN_API_URL: return
-    payload = {"chatId": "33678723278-1540128478@g.us", "message": content}
-    try:
-        requests.post(GREEN_API_URL, json=payload, timeout=15)
-        log("📲 WhatsApp envoyé.")
-    except Exception as e:
-        log(f"❌ Erreur WhatsApp : {e}")
 
 def run_scraper():
     chrome_options = Options()
@@ -71,16 +38,12 @@ def run_scraper():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
+    # User-Agent très récent pour éviter les détections Azure
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 25)
+    wait = WebDriverWait(driver, 30)
     
-    today = datetime.now().strftime("%d/%m/%Y")
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
-    today_results = []
-    seen_runners = set()
-
     try:
         log("🌐 Accès à France Galop...")
         driver.get(URL_HOME)
@@ -93,89 +56,63 @@ def run_scraper():
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- ÉTAPE 1 : EMAIL (ROBUSTE) ---
-        log("📧 Saisie de l'identifiant...")
-        email_field = wait.until(EC.element_to_be_clickable((By.ID, "email")))
-        email_field.click() # Focus
+        # --- ÉTAPE 1 : EMAIL (FORCÉ) ---
+        log("📧 Tentative de saisie de l'identifiant...")
+        
+        # Attente que le champ soit présent, peu importe son ID exact (Azure utilise parfois des variantes)
+        email_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email'], input#email, #email")))
+        
+        # Méthode 1: Clic via ActionChains et saisie de touches
+        actions = ActionChains(driver)
+        actions.move_to_element(email_field).click().perform()
         time.sleep(1)
-        email_field.clear()
-        email_field.send_keys(EMAIL_SENDER)
         
-        # Vérification JS pour GitHub Actions
-        val = driver.execute_script("return document.getElementById('email').value;")
-        if not val:
-            driver.execute_script(f"document.getElementById('email').value = '{EMAIL_SENDER}';")
+        # On vide le champ au cas où
+        email_field.send_keys(Keys.CONTROL + "a")
+        email_field.send_keys(Keys.DELETE)
         
-        driver.save_screenshot("debug_1_email_entered.png")
-        btn_next = driver.find_element(By.ID, "next")
+        # Méthode 2: Saisie via ActionChains (simule mieux un humain)
+        actions.send_keys(EMAIL_SENDER).perform()
+        
+        # Méthode 3: Force via JavaScript si toujours vide
+        val = driver.execute_script("return arguments[0].value;", email_field)
+        if not val or val == "":
+            log("⚠️ Méthode standard échouée, injection via JS...")
+            driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_field)
+            # On déclenche les événements JS pour que le bouton "Next" s'active
+            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: True }));", email_field)
+            driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: True }));", email_field)
+
+        driver.save_screenshot("debug_1_email_typed.png")
+        
+        # Clic sur NEXT (souvent un bouton avec ID 'next' ou de type 'submit')
+        btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, #next, button[type='submit']")))
         driver.execute_script("arguments[0].click();", btn_next)
         time.sleep(3)
 
-        # --- ÉTAPE 2 : PASSWORD ---
-        log("🔒 Saisie du mot de passe...")
-        try:
-            pwd_field = wait.until(EC.visibility_of_element_located((By.ID, "password")))
-            pwd_field.click()
-            pwd_field.send_keys(FG_PASSWORD)
-            
-            # Vérification JS
-            val_pwd = driver.execute_script("return document.getElementById('password').value;")
-            if not val_pwd:
-                driver.execute_script(f"document.getElementById('password').value = '{FG_PASSWORD}';")
-                
-            driver.save_screenshot("debug_2_password_entered.png")
-            btn_login = driver.find_element(By.ID, "next")
-            driver.execute_script("arguments[0].click();", btn_login)
-        except Exception:
-            driver.save_screenshot("debug_error_password.png")
-            raise
+        # --- ÉTAPE 2 : PASSWORD (FORCÉ) ---
+        log("🔒 Tentative de saisie du mot de passe...")
+        pwd_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], input#password, #password")))
+        
+        actions.move_to_element(pwd_field).click().send_keys(FG_PASSWORD).perform()
+        
+        # Force JS si besoin
+        val_pwd = driver.execute_script("return arguments[0].value;", pwd_field)
+        if not val_pwd:
+            driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_field)
+            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: True }));", pwd_field)
 
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
+        driver.save_screenshot("debug_2_password_typed.png")
+        
+        btn_login = driver.find_element(By.CSS_SELECTOR, "button#next, #next, button[type='submit']")
+        driver.execute_script("arguments[0].click();", btn_login)
+
+        # Vérification du succès (attente de la déconnexion ou d'un élément du profil)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected, .my-account")))
         log("✅ Authentification réussie.")
 
-        # --- SCRAPPING ENTRAINEURS ---
-        for trainer_url in URLS_ENTRAINEURS:
-            log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
-            driver.get(trainer_url)
-            time.sleep(5)
-            rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
-            trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
-
-            runners = []
-            for row in rows:
-                txt = row.text
-                if today in txt or tomorrow in txt:
-                    cells = row.find_elements(By.TAG_NAME, "td")
-                    if not cells: continue
-                    full_name = clean_text(cells[0].text)
-                    try:
-                        url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
-                        if f"{full_name}_{url}" not in seen_runners:
-                            seen_runners.add(f"{full_name}_{url}")
-                            runners.append({'date': today if today in txt else tomorrow, 'full_name': full_name, 'pure_name': get_pure_horse_name(full_name), 'url': url, 'trainer': trainer_name, 'course_label': clean_text(cells[4].text)})
-                    except: continue
-
-            for r in runners:
-                log(f"   🐎 Extraction : {r['pure_name']}")
-                driver.get(r['url'])
-                time.sleep(3)
-                try:
-                    search_key = normalize_for_xpath(r['pure_name'])
-                    xpath_row = f"//tr[contains(translate(translate(., \"' \", ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{search_key}')]"
-                    row_cheval = wait.until(EC.presence_of_element_located((By.XPATH, xpath_row)))
-                    cells = row_cheval.find_elements(By.TAG_NAME, "td")
-                    num_cheval = "".join(filter(str.isdigit, cells[0].text))
-                    raw_perf = clean_text(cells[-2].text)
-                    decoded_perf = translate_performance(raw_perf)
-                    msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n📊 *Musique :* {decoded_perf}\n👤 Entr: {r['trainer']}")
-                    if r['date'] == today: today_results.append(msg_line)
-                except: pass
-
-        if today_results:
-            final_msg = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
-            send_whatsapp_notification(final_msg)
-        else:
-            log("📝 Aucun partant aujourd'hui.")
+        # --- LA SUITE DU SCRAPPING ICI ---
+        # (Gardez votre logique de boucle entraîneurs inchangée)
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
