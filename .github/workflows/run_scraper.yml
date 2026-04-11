@@ -49,8 +49,8 @@ jobs:
 
       - name: Sauvegarder les captures d'écran (Debug)
         uses: actions/upload-artifact@v4
-        if: failure() # Ne s'exécute QUE si une étape précédente (le scraper) a échoué
+        if: always() # Ne s'exécute QUE si une étape précédente (le scraper) a échoué
         with:
           name: selenium-screenshots
           path: "*.png" # Récupère tous les fichiers images générés
-          retention-days: 5
+          retention-days: 2
