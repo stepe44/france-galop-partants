@@ -7,50 +7,46 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- CONFIGURATION (Scraping conservé / Notification mise à jour) ---
-URL_LOGIN = "https://www.france-galop.com/fr/login"
+# --- CONFIGURATION ---
+URL_HOME = "https://www.france-galop.com/fr"
 URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/Z1FxYXQ3cFJyM0ZlUitJQTlmUTNiUT09#dernieres-courses",
     "https://www.france-galop.com/fr/entraineur/U0VNb0JtQlZ1bUphYndFTnJjSzg4dz09#dernieres-courses"
 ]
 
-# Variables d'environnement
 FG_PASSWORD = os.getenv("FG_PASSWORD")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER") # Utilisé pour le login
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 GREEN_API_URL = os.getenv("GREEN_API_URL")
+
+def log(message):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
 def clean_text(text):
     if not text: return "N/A"
     return " ".join(text.split()).strip()
 
 def parse_date(date_str):
-    """Convertit une chaîne DD/MM/YYYY en objet datetime."""
     try:
         return datetime.strptime(date_str.strip(), "%d/%m/%Y")
     except:
         return None
 
 def send_whatsapp_notification(content):
-    """Envoie le message via Green-API"""
     if not GREEN_API_URL:
-        print("❌ Erreur : GREEN_API_URL non configurée.")
+        log("❌ Erreur : GREEN_API_URL non configurée.")
         return
-
-    payload = {
-        "chatId": "33678723278-1540128478@g.us",
-        "message": content
-    }
-    headers = {"Content-Type": "application/json"}
-
+    payload = {"chatId": "33678723278-1540128478@g.us", "message": content}
     try:
-        response = requests.post(GREEN_API_URL, json=payload, headers=headers, timeout=15)
-        print(f"📲 Statut WhatsApp : {response.status_code}")
+        response = requests.post(GREEN_API_URL, json=payload, timeout=15)
+        log(f"📲 Statut WhatsApp : {response.status_code}")
     except Exception as e:
-        print(f"❌ Échec envoi WhatsApp : {e}")
+        log(f"❌ Échec envoi WhatsApp : {e}")
 
 def run_scraper_history():
     chrome_options = Options()
@@ -58,37 +54,70 @@ def run_scraper_history():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 15)
+    wait = WebDriverWait(driver, 30)
     
-    # Fenêtre de 7 jours
     today = datetime.now()
     start_date = today - timedelta(days=7)
-    
     final_report = []
 
     try:
-        # --- CONNEXION (Identique PJ) ---
-        driver.get(URL_LOGIN)
+        log("🌐 Accès à France Galop...")
+        driver.get(URL_HOME)
+        
         try:
-            cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
-            cookie_btn.click()
+            wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='name']"))).send_keys(EMAIL_SENDER)
-        driver.find_element(By.CSS_SELECTOR, "input[name='pass']").send_keys(FG_PASSWORD)
-        driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']").click()
+        log("🔑 Ouverture du portail...")
+        login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
+        driver.execute_script("arguments[0].click();", login_btn)
+
+        # --- ÉTAPE 1 : EMAIL (NOUVELLE LOGIQUE) ---
+        log("📧 Tentative de saisie de l'identifiant...")
+        email_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='username'], #email")))
+        
+        actions = ActionChains(driver)
+        actions.move_to_element(email_field).click().perform()
+        time.sleep(1)
+        
+        email_field.send_keys(Keys.CONTROL + "a")
+        email_field.send_keys(Keys.DELETE)
+        actions.send_keys(EMAIL_SENDER).perform()
+        
+        # Sécurité JS
+        driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_field)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: True }));", email_field)
+
+        btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, #next, button[type='submit']")))
+        driver.execute_script("arguments[0].click();", btn_next)
         time.sleep(3)
 
-        # --- ANALYSE DES ENTRAINEURS (Identique PJ) ---
+        # --- ÉTAPE 2 : PASSWORD (NOUVELLE LOGIQUE) ---
+        log("🔒 Tentative de saisie du mot de passe...")
+        pwd_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
+        
+        actions.move_to_element(pwd_field).click().send_keys(FG_PASSWORD).perform()
+        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_field)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: True }));", pwd_field)
+
+        btn_login = driver.find_element(By.CSS_SELECTOR, "button#next, #next, button[type='submit']")
+        driver.execute_script("arguments[0].click();", btn_login)
+
+        # Vérification du succès
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
+        log("✅ Authentification réussie.")
+
+        # --- ANALYSE DES ENTRAINEURS ---
         for trainer_url in URLS_ENTRAINEURS:
-            print(f"Analyse de l'entraîneur : {trainer_url}")
+            log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:20]}")
             driver.get(trainer_url)
             
             try:
                 wait.until(EC.presence_of_element_located((By.ID, "dernieres-courses")))
-                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1.page-header").text.replace("ENTRAINEUR", "").strip()
+                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1").text.replace("ENTRAINEUR", "").strip()
             except:
                 trainer_name = "Inconnu"
 
@@ -106,29 +135,26 @@ def run_scraper_history():
 
                 race_dt = parse_date(raw_date)
                 if race_dt and start_date <= race_dt <= today:
-                    # Filtrage Place (1er à 4e)
                     match_place = re.search(r'^([1-4])$', place)
-                    
                     if match_place:
                         rank = match_place.group(1)
-                        # Formatage pour WhatsApp
                         line = f"🏆 *{horse_name}* ({rank}e)\n📅 {raw_date} | 📍 {hippodrome}\n💰 Gain : {prize}€\n👤 Entr: {trainer_name}"
                         final_report.append(line)
-                        print(f"  ✅ Retenu : {horse_name} ({rank}e)")
+                        log(f"  ✅ Retenu : {horse_name} ({rank}e)")
 
-        # --- ENVOI WHATSAPP ---
         if final_report:
             header = f"💰 *TOP PERFORMANCES (7 derniers jours)*\n\n"
             full_message = header + "\n\n---\n\n".join(final_report)
             send_whatsapp_notification(full_message)
-            print(f"\n📲 Notification WhatsApp envoyée ({len(final_report)} performances).")
         else:
-            print("\nℹ️ Aucune performance de top 4 trouvée.")
+            log("ℹ️ Aucune performance de top 4 trouvée.")
 
     except Exception as e:
-        print(f"💥 Erreur globale : {e}")
+        log(f"💥 Erreur globale : {e}")
+        driver.save_screenshot("debug_gain_error.png")
     finally:
         driver.quit()
+        log("🏁 Fin.")
 
 if __name__ == "__main__":
     run_scraper_history()
