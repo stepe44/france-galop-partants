@@ -37,15 +37,15 @@ jobs:
           GREEN_API_URL: ${{ secrets.GREEN_API_URL }}
         run: python scraper.py
             
-      - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
-        if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
-        env:
-          FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
-          GREEN_API_URL: ${{ secrets.GREEN_API_URL }}
-        run: python gain.py
+#      - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
+#        if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
+#        env:
+#          FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
+#          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+#          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+#          EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
+#          GREEN_API_URL: ${{ secrets.GREEN_API_URL }}
+#        run: python gain.py
 
       - name: Sauvegarder les captures d'écran (Debug)
         uses: actions/upload-artifact@v4
