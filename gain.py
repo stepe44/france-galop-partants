@@ -38,15 +38,13 @@ def parse_date(date_str):
         return None
 
 def send_whatsapp_notification(content):
-    if not GREEN_API_URL:
-        log("❌ Erreur : GREEN_API_URL non configurée.")
-        return
+    if not GREEN_API_URL: return
     payload = {"chatId": "33678723278-1540128478@g.us", "message": content}
     try:
-        response = requests.post(GREEN_API_URL, json=payload, timeout=15)
-        log(f"📲 Statut WhatsApp : {response.status_code}")
+        requests.post(GREEN_API_URL, json=payload, timeout=15)
+        log("📲 WhatsApp envoyé.")
     except Exception as e:
-        log(f"❌ Échec envoi WhatsApp : {e}")
+        log(f"❌ Erreur WhatsApp : {e}")
 
 def run_scraper_history():
     chrome_options = Options()
@@ -64,19 +62,18 @@ def run_scraper_history():
     final_report = []
 
     try:
-        log(f"🌐 Navigation initiale : {URL_HOME}")
+        log(f"🌐 Navigation : {URL_HOME}")
         driver.get(URL_HOME)
         
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        log("🔑 Ouverture du portail de connexion...")
+        log("🔑 Connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- ÉTAPE 1 : EMAIL ---
-        log("📧 Saisie de l'identifiant...")
+        # --- CONNEXION ---
         time.sleep(5)
         email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
         
@@ -95,36 +92,36 @@ def run_scraper_history():
         btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next, #next")
         driver.execute_script("arguments[0].click();", btn_next)
         
-        # --- ÉTAPE 2 : PASSWORD ---
         time.sleep(4)
-        log("🔒 Saisie du mot de passe...")
         pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
-        
         driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_el)
-        driver.execute_script("""
-            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-        """, pwd_el)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_el)
         
         btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        log("⏳ Attente de redirection vers France Galop (10s)...")
-        time.sleep(10)
+        # --- FIXATION DE SESSION ---
+        log("⏳ Fixation de la session (12s)...")
+        time.sleep(12)
+        driver.get(URL_HOME)
+        time.sleep(5)
 
         # --- ÉTAPE 3 : ANALYSE ---
         for i, trainer_url in enumerate(URLS_ENTRAINEURS):
             log(f"Analyse de l'entraîneur : {trainer_url}")
             driver.get(trainer_url)
-            time.sleep(5)
+            time.sleep(7)
             
-            # --- CAPTURE D'ÉCRAN DE CONTRÔLE ---
-            driver.save_screenshot(f"gain_check_trainer_{i}.png")
-            log(f"📸 Capture d'écran effectuée : gain_check_trainer_{i}.png")
+            if "ciamlogin.com" in driver.current_url:
+                log("🚨 Redirection Login ! Re-tentative...")
+                driver.get(trainer_url)
+                time.sleep(5)
+            
+            driver.save_screenshot(f"gain_check_{i}.png")
             
             try:
                 wait.until(EC.presence_of_element_located((By.ID, "dernieres-courses")))
-                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1.page-header").text.replace("ENTRAINEUR", "").strip()
+                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1").text.replace("ENTRAINEUR", "").strip()
             except:
                 trainer_name = "Inconnu"
 
@@ -143,7 +140,6 @@ def run_scraper_history():
                 race_dt = parse_date(raw_date)
                 if race_dt and start_date <= race_dt <= today:
                     match_place = re.search(r'^([1-4])$', place)
-                    
                     if match_place:
                         rank = match_place.group(1)
                         line = f"🏆 *{horse_name}* ({rank}e)\n📅 {raw_date} | 📍 {hippodrome}\n💰 Gain : {prize}€\n👤 Entr: {trainer_name}"
@@ -158,8 +154,8 @@ def run_scraper_history():
             log("ℹ️ Aucune performance de top 4 trouvée.")
 
     except Exception as e:
-        log(f"💥 Erreur globale : {e}")
-        driver.save_screenshot("gain_error_final.png")
+        log(f"💥 ERREUR : {e}")
+        driver.save_screenshot("gain_fatal_error.png")
     finally:
         driver.quit()
         log("🏁 Fin.")
