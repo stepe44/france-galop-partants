@@ -13,84 +13,80 @@ def setup_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
+    # On ajoute le User-Agent souvent présent dans les scrapers stables
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=options)
 
-def login(driver):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔑 Connexion à France Galop...")
+def login_method_scraper(driver):
+    """ Utilise la même approche que scraper.py """
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔑 Connexion (Méthode Scraper)...")
     try:
         driver.get("https://www.france-galop.com/fr/user/login")
-        # Attente du champ email (ajustez le sélecteur si besoin)
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 20)
+        
+        # Attente des champs avec les sélecteurs standard
         email_field = wait.until(EC.presence_of_element_located((By.ID, "edit-name")))
         pass_field = driver.find_element(By.ID, "edit-pass")
         
-        email_field.send_keys(os.getenv("EMAIL_SENDER")) # Ou votre login
+        email_field.send_keys(os.getenv("EMAIL_SENDER"))
         pass_field.send_keys(os.getenv("FG_PASSWORD"))
         
-        driver.find_element(By.ID, "edit-submit").click()
-        time.sleep(5)
-        print("✅ Connexion réussie.")
+        # Clic sur le bouton submit
+        submit_btn = driver.find_element(By.ID, "edit-submit")
+        driver.execute_script("arguments[0].click();", submit_btn)
+        
+        # Temps de stabilisation comme dans scraper.py
+        time.sleep(10) 
+        driver.save_screenshot("after_login_check.png")
+        print("✅ Session initialisée.")
     except Exception as e:
-        print(f"❌ Échec de la connexion : {e}")
-        driver.save_screenshot("login_error.png")
+        print(f"❌ Échec de la connexion méthode scraper : {e}")
+        driver.save_screenshot("error_login_method.png")
 
-def extract_gains(driver, coach_id):
+def process_gain_table(driver, coach_id):
     url = f"https://www.france-galop.com/fr/entraineur/{coach_id}"
     driver.get(url)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Analyse : {coach_id}")
-    
-    # Stabilisation
-    time.sleep(5)
-    
-    # Capture d'écran pour vérification
-    screenshot_name = f"view_{coach_id[:8]}.png"
-    driver.save_screenshot(screenshot_name)
+    time.sleep(5) # Attente chargement JS
     
     total_gains = 0
     try:
-        # On cible spécifiquement le tableau des dernières courses
-        wait = WebDriverWait(driver, 10)
-        table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-striped")))
+        wait = WebDriverWait(driver, 15)
+        # On cherche le tableau des résultats comme sur votre capture
+        # Le sélecteur 'table' générique est plus sûr si les classes changent
+        table = wait.until(EC.presence_of_element_located((By.XPATH, "//table[contains(@class, 'table')]")))
         
-        rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+        driver.save_screenshot(f"table_debug_{coach_id[:5]}.png")
         
-        for row in rows:
+        rows = table.find_elements(By.TAG_NAME, "tr")
+        for row in rows[1:]: # Skip header
             cols = row.find_elements(By.TAG_NAME, "td")
-            if len(cols) > 10: # Vérifie qu'on a bien toutes les colonnes
-                # Colonne Gain est généralement l'index 9 (à vérifier selon le tableau)
-                gain_text = cols[9].text.strip()
-                
-                if gain_text and gain_text != "-":
-                    # Nettoyage du format : "11.440" -> 11440
-                    clean_gain = int(gain_text.replace(".", "").replace(" ", ""))
-                    total_gains += clean_gain
+            if len(cols) >= 10:
+                # On nettoie le texte (ex: '11.440' -> '11440')
+                raw_val = cols[9].text.strip().replace('.', '').replace(' ', '')
+                if raw_val.isdigit():
+                    total_gains += int(raw_val)
         
-        print(f"💰 Total Gains extraits : {total_gains} €")
+        print(f"📊 {coach_id} : {total_gains} € extraits.")
         return total_gains
 
     except Exception as e:
-        print(f"⚠️ Format de stats inhabituel ou tableau absent pour {coach_id}")
+        print(f"⚠️ Erreur sur {coach_id} : Tableau introuvable.")
         return 0
 
 def main():
     driver = setup_driver()
     try:
-        login(driver)
+        login_method_scraper(driver)
         
-        # Exemple de liste d'IDs (à remplacer par votre logique de récupération d'IDs)
-        list_of_ids = ["U0VNb0JtQlZ1bUpYndFTnJzZz4dz09"] 
+        # Remplacez par votre liste dynamique
+        ids_to_check = ["U0VNb0JtQlZ1bUpYndFTnJzZz4dz09"] 
         
-        results = {}
-        for cid in list_of_ids:
-            gain = extract_gains(driver, cid)
-            results[cid] = gain
+        for cid in ids_to_check:
+            process_gain_table(driver, cid)
             
-        if not results or sum(results.values()) == 0:
-            print("📝 Aucune donnée de gain extraite.")
-        
     finally:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🏁 Fin de session Gain.")
         driver.quit()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🏁 Terminé.")
 
 if __name__ == "__main__":
     main()
