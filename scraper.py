@@ -82,19 +82,19 @@ def run_scraper():
     seen_runners = set()
 
     try:
-        log(f"🌐 Navigation initiale : {URL_HOME}")
+        log(f"🌐 Navigation : {URL_HOME}")
         driver.get(URL_HOME)
         
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        log("🔑 Ouverture du portail de connexion...")
+        log("🔑 Connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
         # --- ÉTAPE 1 : EMAIL ---
-        log("📧 Saisie de l'identifiant...")
+        log("📧 Saisie Email...")
         time.sleep(5)
         email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
         
@@ -115,34 +115,38 @@ def run_scraper():
         
         # --- ÉTAPE 2 : PASSWORD ---
         time.sleep(4)
-        log("🔒 Saisie du mot de passe...")
+        log("🔒 Saisie Password...")
         pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
-        
         driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_el)
-        driver.execute_script("""
-            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-        """, pwd_el)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_el)
         
         btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        log("⏳ Attente de redirection vers France Galop (10s)...")
-        time.sleep(10)
+        # --- FIXATION DE SESSION (Crucial) ---
+        log("⏳ Fixation de la session (12s)...")
+        time.sleep(12)
+        driver.get(URL_HOME)
+        time.sleep(5)
+        driver.save_screenshot("check_session_home.png")
 
         # --- ÉTAPE 3 : SCRAPING ---
         for i, trainer_url in enumerate(URLS_ENTRAINEURS):
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:20]}")
             driver.get(trainer_url)
-            time.sleep(5)
+            time.sleep(7) # Plus de temps pour charger le JS
             
-            # --- CAPTURE D'ÉCRAN DE CONTRÔLE ---
-            driver.save_screenshot(f"partants_check_trainer_{i}.png")
-            log(f"📸 Capture d'écran effectuée : partants_check_trainer_{i}.png")
+            # Re-tentative si redirection login
+            if "ciamlogin.com" in driver.current_url:
+                log("🚨 Redirection Login ! Re-tentative...")
+                driver.get(trainer_url)
+                time.sleep(5)
+            
+            driver.save_screenshot(f"check_trainer_{i}.png")
 
             rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
             if not rows:
-                log(f"⚠️ Aucun tableau pour {trainer_url}. Vérification de la session...")
+                log(f"⚠️ Aucun tableau pour {trainer_url}")
                 continue
 
             trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
@@ -185,11 +189,11 @@ def run_scraper():
             log("📝 Aucun partant pour aujourd'hui.")
 
     except Exception as e:
-        log(f"💥 ERREUR CRITIQUE : {e}")
-        driver.save_screenshot("partants_error_final.png")
+        log(f"💥 ERREUR : {e}")
+        driver.save_screenshot("debug_fatal_error.png")
     finally:
         driver.quit()
-        log("🏁 Fin de session.")
+        log("🏁 Fin.")
 
 if __name__ == "__main__":
     run_scraper()
