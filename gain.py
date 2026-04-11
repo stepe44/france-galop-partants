@@ -7,7 +7,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-# Importation des outils pour la simulation "Blindée"
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
@@ -33,14 +32,12 @@ def clean_text(text):
     return " ".join(text.split()).strip()
 
 def parse_date(date_str):
-    """Convertit une chaîne DD/MM/YYYY en objet datetime."""
     try:
         return datetime.strptime(date_str.strip(), "%d/%m/%Y")
     except:
         return None
 
 def send_whatsapp_notification(content):
-    """Envoie le message via Green-API"""
     if not GREEN_API_URL:
         log("❌ Erreur : GREEN_API_URL non configurée.")
         return
@@ -62,73 +59,67 @@ def run_scraper_history():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 30)
     
-    # Fenêtre de 7 jours
     today = datetime.now()
     start_date = today - timedelta(days=7)
     final_report = []
 
     try:
-        log("🌐 Accès à France Galop...")
+        log(f"🌐 Navigation initiale : {URL_HOME}")
         driver.get(URL_HOME)
         
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        log("🔑 Ouverture du portail...")
+        log("🔑 Ouverture du portail de connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- ÉTAPE 1 : EMAIL (VERSION BLINDÉE) ---
-        log("📧 Tentative de saisie de l'identifiant...")
-        email_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email'], input#email, #email")))
+        # --- ÉTAPE 1 : EMAIL (MÉTHODE BLINDÉE) ---
+        log("📧 Saisie de l'identifiant...")
+        time.sleep(5)
+        email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
         
-        actions = ActionChains(driver)
-        actions.move_to_element(email_field).click().perform()
+        email_el.clear()
+        for char in EMAIL_SENDER:
+            email_el.send_keys(char)
+            time.sleep(0.1)
+            
+        driver.execute_script("""
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+        """, email_el)
+        
         time.sleep(1)
-        
-        email_field.send_keys(Keys.CONTROL + "a")
-        email_field.send_keys(Keys.DELETE)
-        actions.send_keys(EMAIL_SENDER).perform()
-        
-        # Force JS + DispatchEvent
-        driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_field)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: True }));", email_field)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: True }));", email_field)
-
-        driver.save_screenshot("debug_gain_1_email.png")
-        
-        btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, #next, button[type='submit']")))
+        btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next, #next")
         driver.execute_script("arguments[0].click();", btn_next)
-        time.sleep(3)
-
-        # --- ÉTAPE 2 : PASSWORD (VERSION BLINDÉE) ---
-        log("🔒 Tentative de saisie du mot de passe...")
-        pwd_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], input#password, #password")))
         
-        actions.move_to_element(pwd_field).click().send_keys(FG_PASSWORD).perform()
+        # --- ÉTAPE 2 : PASSWORD (MÉTHODE BLINDÉE) ---
+        time.sleep(4)
+        log("🔒 Saisie du mot de passe...")
+        pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
         
-        # Force JS
-        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_field)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: True }));", pwd_field)
-
-        driver.save_screenshot("debug_gain_2_password.png")
+        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_el)
+        driver.execute_script("""
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+        """, pwd_el)
         
-        btn_login = driver.find_element(By.CSS_SELECTOR, "button#next, #next, button[type='submit']")
+        btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        # Vérification du succès
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
-        log("✅ Authentification réussie.")
+        log("⏳ Attente de redirection vers France Galop (10s)...")
+        time.sleep(10)
 
-        # --- ANALYSE DES ENTRAINEURS ---
+        # --- ANALYSE DES ENTRAINEURS (Logique originale conservée) ---
         for trainer_url in URLS_ENTRAINEURS:
-            log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:20]}...")
+            log(f"Analyse de l'entraîneur : {trainer_url}")
             driver.get(trainer_url)
             
             try:
                 wait.until(EC.presence_of_element_located((By.ID, "dernieres-courses")))
-                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1").text.replace("ENTRAINEUR", "").strip()
+                trainer_name = driver.find_element(By.CSS_SELECTOR, "h1.page-header").text.replace("ENTRAINEUR", "").strip()
             except:
                 trainer_name = "Inconnu"
 
@@ -146,16 +137,14 @@ def run_scraper_history():
 
                 race_dt = parse_date(raw_date)
                 if race_dt and start_date <= race_dt <= today:
-                    # Filtrage Place (1er à 4e)
                     match_place = re.search(r'^([1-4])$', place)
                     
                     if match_place:
                         rank = match_place.group(1)
                         line = f"🏆 *{horse_name}* ({rank}e)\n📅 {raw_date} | 📍 {hippodrome}\n💰 Gain : {prize}€\n👤 Entr: {trainer_name}"
                         final_report.append(line)
-                        log(f"  ✅ Retenu : {horse_name} ({rank}e)")
+                        print(f"  ✅ Retenu : {horse_name} ({rank}e)")
 
-        # --- ENVOI WHATSAPP ---
         if final_report:
             header = f"💰 *TOP PERFORMANCES (7 derniers jours)*\n\n"
             full_message = header + "\n\n---\n\n".join(final_report)
@@ -165,7 +154,7 @@ def run_scraper_history():
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
-        driver.save_screenshot("debug_gain_final_error.png")
+        driver.save_screenshot("gain_error.png")
     finally:
         driver.quit()
         log("🏁 Fin.")
