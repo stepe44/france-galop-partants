@@ -7,6 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
@@ -20,13 +21,14 @@ URLS_ENTRAINEURS = [
 
 FG_PASSWORD = os.getenv("FG_PASSWORD")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+GREEN_API_URL = os.getenv("GREEN_API_URL")
 
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
 def run_scraper():
     chrome_options = Options()
-    # xvfb-run simule l'écran sur GitHub Actions
+    # Configuration pour XVFB (non-headless)
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
@@ -37,66 +39,76 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    wait = WebDriverWait(driver, 40) # Timeout étendu
+    
+    wait = WebDriverWait(driver, 35)
     today = datetime.now().strftime("%d/%m/%Y")
     today_results = []
 
     try:
-        log("🌐 Navigation Home...")
+        log("🌐 Navigation vers France Galop...")
         driver.get(URL_HOME)
-        time.sleep(8)
+        time.sleep(7)
         
-        # 1. ACCEPTER LES COOKIES (IMPÉRATIF)
+        # 1. Gestion des Cookies
         try:
-            log("🍪 Tentative acceptation cookies...")
             cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
             driver.execute_script("arguments[0].click();", cookie_btn)
-            time.sleep(2)
-        except: log("ℹ️ Pas de bannière de cookies détectée.")
+            log("🍪 Cookies acceptés.")
+        except: pass
 
-        # 2. OUVERTURE CONNEXION
-        log("🔑 Clic sur bouton de connexion...")
-        login_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
+        # 2. Lancement Connexion
+        log("🔑 Ouverture du portail de connexion...")
+        login_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login'], .user-link")))
         driver.execute_script("arguments[0].click();", login_btn)
+
+        # --- PHASE EMAIL ---
+        log("📧 Traitement de l'étape Email...")
+        email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='username']")))
         
-        # 3. SAISIE EMAIL
-        log("📧 Attente champ Email (Azure AD)...")
-        email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[name='username'], input[type='email'], #email")))
-        email_el.clear()
-        for char in EMAIL_SENDER: email_el.send_keys(char)
+        # On vérifie si l'email est déjà là (cas de la capture image_dc2724.png)
+        if not email_el.get_attribute("value"):
+            for char in EMAIL_SENDER: email_el.send_keys(char)
+            log("⌨️ Email saisi.")
+        
         driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_el)
+        driver.save_screenshot("debug_email_ready.png")
+
+        # Clic sur NEXT
+        btn_next = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']")))
+        driver.execute_script("arguments[0].click();", btn_next)
         
-        # Clic "Suivant" avec sélecteurs de secours
-        next_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, input[type='submit'], .next-button")))
-        driver.execute_script("arguments[0].click();", next_btn)
-        
-        # 4. SAISIE PASSWORD
-        log("🔒 Attente champ Password...")
+        # Attente que l'écran Email disparaisse
+        wait.until(EC.staleness_of(email_el))
+        log("➡️ Passage à l'étape Password.")
+
+        # --- PHASE PASSWORD ---
         time.sleep(6)
         pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
-        for char in FG_PASSWORD: 
+        log("🔒 Saisie du mot de passe...")
+        for char in FG_PASSWORD:
             pwd_el.send_keys(char)
             time.sleep(0.05)
+        
         driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_el)
-        
-        # Clic "Se connecter"
-        submit_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, input[type='submit'], .sign-in")))
-        driver.execute_script("arguments[0].click();", submit_btn)
-        
-        log("⏳ Fixation session (20s)...")
-        time.sleep(20)
-        driver.get(URL_HOME) # Force retour Home connecté
-        time.sleep(5)
-        driver.save_screenshot("check_final_home.png")
+        driver.save_screenshot("debug_pwd_ready.png")
 
-        # 5. SCRAPING ENTRAINEURS
+        btn_submit = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']")))
+        driver.execute_script("arguments[0].click();", btn_submit)
+        
+        log("⏳ Attente de redirection et fixation session (20s)...")
+        time.sleep(20)
+        driver.get(URL_HOME)
+        time.sleep(5)
+
+        # 3. ANALYSE DES ENTRAINEURS
         for i, trainer_url in enumerate(URLS_ENTRAINEURS):
-            log(f"🚀 Navigation vers : {trainer_url}")
+            log(f"🚀 Analyse : {trainer_url.split('/')[-1][:15]}")
             driver.get(trainer_url)
             time.sleep(10)
-            
+            driver.save_screenshot(f"check_trainer_page_{i}.png")
+
             if "Accès refusé" in driver.page_source:
-                log(f"❌ Accès refusé pour {trainer_url}.")
+                log("❌ Accès refusé par le site.")
                 continue
 
             try:
@@ -106,21 +118,24 @@ def run_scraper():
                 time.sleep(5)
                 
                 rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
-                log(f"✅ {len(rows)} chevaux trouvés.")
+                log(f"📊 {len(rows)} lignes trouvées.")
                 
                 for row in rows:
                     if today in row.text:
-                        name = row.find_elements(By.TAG_NAME, "td")[0].text.strip()
+                        name = row.find_elements(By.TAG_NAME, "td")[0].text.strip().split(' (')[0]
                         today_results.append(f"🏇 {name}")
             except Exception as e:
-                log(f"⚠️ Erreur : {str(e)[:50]}")
+                log(f"⚠️ Erreur extraction : {str(e)[:50]}")
+
+        if today_results:
+            log(f"📤 {len(today_results)} partants trouvés.")
 
     except Exception as e:
-        log(f"💥 Erreur Critique : {e}")
-        driver.save_screenshot("fatal_error_home.png")
+        log(f"💥 ERREUR CRITIQUE : {e}")
+        driver.save_screenshot("fatal_error_final.png")
     finally:
         driver.quit()
-        log("🏁 Session terminée.")
+        log("🏁 Fin de session.")
 
 if __name__ == "__main__":
     run_scraper()
