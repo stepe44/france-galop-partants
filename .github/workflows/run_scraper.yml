@@ -45,7 +45,7 @@ jobs:
         run: xvfb-run --auto-servernum python scraper.py
             
       - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
-        if: github.event.schedule == '0 8 * * 1' || (github.event_name == 'workflow_dispatch' && false) # Désactivé par défaut comme dans votre original
+        if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
