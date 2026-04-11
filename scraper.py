@@ -26,94 +26,89 @@ def log(message):
 
 def run_scraper():
     chrome_options = Options()
-    # UTILISATION DU MODE "NEW" HEADLESS (Moins détectable)
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # PARAMÈTRES ANTI-DÉTECTION CRUCIAUX
+    # Paramètres de furtivité pour éviter "Accès Refusé"
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    
-    # Suppression du flag webdriver via JS
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 20)
     today = datetime.now().strftime("%d/%m/%Y")
     today_results = []
 
     try:
         for i, trainer_url in enumerate(URLS_ENTRAINEURS):
-            log(f"🌐 Accès : {trainer_url}")
+            log(f"🌐 Navigation vers : {trainer_url}")
             driver.get(trainer_url)
             time.sleep(5)
 
-            # Connexion si nécessaire
             if "ciamlogin.com" in driver.current_url:
-                log("🔑 Connexion requise...")
+                log("🔑 Écran de connexion détecté...")
                 
-                # Saisie Email
-                email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username']")))
-                for char in EMAIL_SENDER: email_el.send_keys(char)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_el)
-                driver.find_element(By.ID, "next").click()
+                # 1. Saisie Email
+                email_field = wait.until(EC.element_to_be_clickable((By.NAME, "username")))
+                for char in EMAIL_SENDER: 
+                    email_field.send_keys(char)
+                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_field)
                 
-                # Saisie Password (Blindée)
+                # Clic Next (Sélecteur renforcé)
+                btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, button[type='submit'], .next")))
+                driver.execute_script("arguments[0].click();", btn_next)
+                log("📧 Email validé.")
+                
+                # 2. Saisie Password
                 time.sleep(5)
-                pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
+                pwd_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='password']")))
                 for char in FG_PASSWORD:
-                    pwd_el.send_keys(char)
+                    pwd_field.send_keys(char)
                     time.sleep(0.05)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_el)
-                driver.find_element(By.ID, "next").click()
+                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_field)
                 
-                # Attente REDIRECTION
-                log("⏳ Validation SSO...")
+                # Clic Sign-in (Sélecteur renforcé)
+                btn_signin = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, button[type='submit'], .sign-in")))
+                driver.execute_script("arguments[0].click();", btn_signin)
+                log("🔒 Mot de passe validé. Redirection...")
+                
                 time.sleep(15)
 
-            # --- VÉRIFICATION APRÈS CONNEXION ---
-            if "openid-connect/sso" in driver.current_url or "france-galop.com/fr" == driver.current_url.strip('/'):
-                log("🔄 Forçage URL après SSO...")
+            # --- VÉRIFICATION POST-CONNEXION ---
+            if trainer_url not in driver.current_url:
                 driver.get(trainer_url)
-                time.sleep(10)
+                time.sleep(8)
 
-            driver.save_screenshot(f"check_stealth_trainer_{i}.png")
-
-            if "Accès refusé" in driver.page_source:
-                log("❌ ACCÈS REFUSÉ détecté. Tentative de rafraîchissement avec cookies...")
-                driver.refresh()
-                time.sleep(10)
+            driver.save_screenshot(f"check_final_{i}.png")
 
             try:
-                # Activation onglet
+                # Activation onglet Partants
                 tab = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='#partants']")))
                 driver.execute_script("arguments[0].click();", tab)
                 time.sleep(5)
                 
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#partants_entraineur tbody tr")))
                 rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
-                log(f"✅ SUCCÈS : {len(rows)} chevaux trouvés.")
+                log(f"✅ {len(rows)} chevaux trouvés.")
                 
                 for row in rows:
                     if today in row.text:
                         name = row.find_elements(By.TAG_NAME, "td")[0].text.strip()
                         today_results.append(f"🏇 {name}")
             except:
-                log(f"⚠️ Impossible de voir le tableau. Page : {driver.current_url}")
-
-        if today_results:
-            log(f"📤 {len(today_results)} partants trouvés.")
+                log(f"⚠️ Aucun tableau visible pour {trainer_url}")
 
     except Exception as e:
-        log(f"💥 Erreur : {e}")
+        log(f"💥 Erreur Critique : {e}")
+        driver.save_screenshot("fatal_error.png")
     finally:
         driver.quit()
-        log("🏁 Fin.")
+        log("🏁 Fin de session.")
 
 if __name__ == "__main__":
     run_scraper()
