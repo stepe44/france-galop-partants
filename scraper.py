@@ -93,31 +93,41 @@ def run_scraper():
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # 📧 Saisie Email (Méthode validée par vos logs)
-        email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username'], input[type='email']")))
+        # --- ÉTAPE 1 : EMAIL (Sélecteur 'username' identifié par vos logs) ---
+        log("📧 Tentative de saisie de l'identifiant...")
+        email_el = wait.until(EC.presence_of_element_located((By.NAME, "username")))
+        
         actions = ActionChains(driver)
-        actions.move_to_element(email_el).click().send_keys(EMAIL_SENDER).perform()
+        actions.move_to_element(email_el).click().perform()
+        time.sleep(1)
+        
+        # Injection directe JavaScript car l'ID est vide
         driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_el)
         driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_el)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", email_el)
         
-        btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
+        driver.save_screenshot("debug_1_email_typed.png")
+        btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, #next, .next")))
         driver.execute_script("arguments[0].click();", btn_next)
         time.sleep(4)
 
-        # 🔒 Saisie Password
-        pwd_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
+        # --- ÉTAPE 2 : PASSWORD ---
+        log("🔒 Tentative de saisie du mot de passe...")
+        pwd_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], input[name='passwd'], #password")))
+        
         driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_field)
         driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_field)
-        
-        btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
+
+        driver.save_screenshot("debug_2_password_typed.png")
+        btn_login = driver.find_element(By.CSS_SELECTOR, "button#next, #next, button[type='submit']")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        # Attente redirection
+        # Redirection vers le domaine principal
         wait.until(EC.url_contains("france-galop.com"))
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
         log("✅ Authentification réussie.")
 
-        # --- DÉBUT DE L'ANALYSE DES PARTANTS ---
+        # --- DÉBUT DE L'ANALYSE DES PARTANTS (Restauré) ---
         for trainer_url in URLS_ENTRAINEURS:
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
@@ -177,6 +187,7 @@ def run_scraper():
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
+        driver.save_screenshot("debug_final_error.png")
     finally:
         driver.quit()
         log("🏁 Fin.")
