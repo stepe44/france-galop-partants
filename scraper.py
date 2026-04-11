@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import base64
 import requests
 from datetime import datetime, timedelta
 from selenium import webdriver
@@ -26,6 +27,16 @@ GREEN_API_URL = os.getenv("GREEN_API_URL")
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
+def save_debug_screenshot(driver, name="debug_error"):
+    """ Sauvegarde une image physique et affiche la version base64 dans les logs GitHub """
+    filename = f"{name}.png"
+    driver.save_screenshot(filename)
+    try:
+        with open(filename, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+            print(f"\n--- DEBUG_SCREENSHOT_START ({filename}) ---\n{encoded}\n--- DEBUG_SCREENSHOT_END ---\n")
+    except: pass
+
 def translate_performance(musique):
     if not musique or musique == "N/A": return "Aucune performance récente"
     mapping_disc = {'p': 'Plat', 's': 'Steeple', 'h': 'Haies', 'c': 'Cross', 'a': 'Attelé', 'm': 'Monté'}
@@ -40,13 +51,9 @@ def translate_performance(musique):
         matches = re.findall(r'([0-9A-Z])([a-z])', part)
         for rank, disc in matches:
             d_name = mapping_disc.get(disc, disc)
-            if rank.isdigit():
-                r_text = f"{rank}er" if rank == "1" else f"{rank}e"
-                if rank == "0": r_text = "Non placé"
-                decoded_parts.append(f"{r_text} en {d_name} ({current_year})")
-            else:
-                inc_text = mapping_inc.get(rank, rank)
-                decoded_parts.append(f"{inc_text} en {d_name} ({current_year})")
+            r_text = f"{rank}er" if rank == "1" else (f"{rank}e" if rank.isdigit() else mapping_inc.get(rank, rank))
+            if rank == "0": r_text = "Non placé"
+            decoded_parts.append(f"{r_text} en {d_name} ({current_year})")
     return " | ".join(decoded_parts[:3])
 
 def clean_text(text):
@@ -77,13 +84,19 @@ def run_scraper():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    # Masquage de l'automatisation
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 25) # Augmentation du timeout pour la connexion
+    # Suppression du flag navigator.webdriver
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
+    wait = WebDriverWait(driver, 30)
     today = datetime.now().strftime("%d/%m/%Y")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
     today_results = []
@@ -93,34 +106,39 @@ def run_scraper():
         log("🌐 Accès à France Galop...")
         driver.get(URL_HOME)
         
-        # Gestion des cookies
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        # Étape 1 : Clic sur Connexion / Espace Pro
         log("🔑 Ouverture du portail de connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # Étape 2 : Saisie Email + Touche Entrée (Azure AD)
+        # Étape 2 : Email
         log("📧 Saisie de l'identifiant...")
-        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email")))
-        email_field.clear()
-        email_field.send_keys(EMAIL_SENDER)
-        time.sleep(1)
-        email_field.send_keys(Keys.ENTER) # Plus fiable que le clic sur "Suivant"
+        try:
+            email_field = wait.until(EC.visibility_of_element_located((By.ID, "email")))
+            email_field.clear()
+            email_field.send_keys(EMAIL_SENDER)
+            time.sleep(1)
+            email_field.send_keys(Keys.ENTER)
+        except Exception as e:
+            save_debug_screenshot(driver, "error_email_stage")
+            raise e
 
-        # Étape 3 : Saisie Mot de passe + Touche Entrée
-        log("🔒 Saisie du mot de passe...")
-        # On attend que le champ password apparaisse après la transition
-        pwd_field = wait.until(EC.visibility_of_element_located((By.ID, "password")))
-        pwd_field.clear()
-        pwd_field.send_keys(FG_PASSWORD)
-        time.sleep(1)
-        pwd_field.send_keys(Keys.ENTER)
+        # Étape 3 : Password
+        log("🔒 Attente du champ password...")
+        try:
+            pwd_field = wait.until(EC.visibility_of_element_located((By.ID, "password")))
+            pwd_field.clear()
+            pwd_field.send_keys(FG_PASSWORD)
+            time.sleep(1)
+            pwd_field.send_keys(Keys.ENTER)
+        except Exception as e:
+            save_debug_screenshot(driver, "error_password_stage")
+            log("⚠️ Note : Si l'erreur est ici, un Captcha est probable.")
+            raise e
 
-        # Vérification du retour sur le site principal
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
         log("✅ Authentification réussie.")
 
@@ -128,7 +146,7 @@ def run_scraper():
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
             time.sleep(5)
-
+            
             rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
             trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
 
@@ -138,29 +156,18 @@ def run_scraper():
                 if today in txt or tomorrow in txt:
                     cells = row.find_elements(By.TAG_NAME, "td")
                     if not cells: continue
-                    
                     full_name = clean_text(cells[0].text)
                     try:
                         url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
                     except: continue
-                    
                     if f"{full_name}_{url}" in seen_runners: continue
                     seen_runners.add(f"{full_name}_{url}")
-
-                    runners.append({
-                        'date': today if today in txt else tomorrow,
-                        'full_name': full_name,
-                        'pure_name': get_pure_horse_name(full_name),
-                        'url': url,
-                        'trainer': trainer_name,
-                        'course_label': clean_text(cells[4].text)
-                    })
+                    runners.append({'date': today if today in txt else tomorrow, 'full_name': full_name, 'pure_name': get_pure_horse_name(full_name), 'url': url, 'trainer': trainer_name, 'course_label': clean_text(cells[4].text)})
 
             for r in runners:
                 log(f"   🐎 Extraction : {r['pure_name']}")
                 driver.get(r['url'])
                 time.sleep(3)
-                
                 try:
                     details = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
                     heure, hippo, n_course = "00:00", "Inconnu", "?"
@@ -173,27 +180,16 @@ def run_scraper():
                             if m_n: n_course = m_n.group(1)
                             if "," in p_txt: hippo = clean_text(p_txt.split(",")[-1])
                             break
-                    
                     search_key = normalize_for_xpath(r['pure_name'])
                     xpath_row = f"//tr[contains(translate(translate(., \"' \", ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{search_key}')]"
                     row_cheval = wait.until(EC.presence_of_element_located((By.XPATH, xpath_row)))
                     cells = row_cheval.find_elements(By.TAG_NAME, "td")
-                    
                     num_cheval = "".join(filter(str.isdigit, cells[0].text))
                     raw_perf = clean_text(cells[-2].text) 
                     decoded_perf = translate_performance(raw_perf)
-
-                    msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n"
-                                f"📍 {hippo} - C{n_course} à {heure}\n"
-                                f"📊 *Musique :* {decoded_perf}\n"
-                                f"📝 {r['course_label']}\n"
-                                f"👤 Entr: {r['trainer']}")
-                    
-                    if r['date'] == today:
-                        today_results.append(msg_line)
-                        log(f"      ✅ OK : {r['pure_name']}")
-                except Exception as e:
-                    log(f"      ⚠️ Erreur détails {r['pure_name']} : {str(e)[:50]}")
+                    msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n📍 {hippo} - C{n_course} à {heure}\n📊 *Musique :* {decoded_perf}\n📝 {r['course_label']}\n👤 Entr: {r['trainer']}")
+                    if r['date'] == today: today_results.append(msg_line)
+                except: pass
 
         if today_results:
             final_msg = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
@@ -203,7 +199,7 @@ def run_scraper():
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
-        driver.save_screenshot("debug_error.png") # Capture d'écran utile en mode headless
+        save_debug_screenshot(driver, "global_error")
     finally:
         driver.quit()
         log("🏁 Fin.")
