@@ -75,7 +75,7 @@ def run_scraper_history():
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- ÉTAPE 1 : EMAIL (MÉTHODE BLINDÉE) ---
+        # --- ÉTAPE 1 : EMAIL ---
         log("📧 Saisie de l'identifiant...")
         time.sleep(5)
         email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
@@ -95,7 +95,7 @@ def run_scraper_history():
         btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next, #next")
         driver.execute_script("arguments[0].click();", btn_next)
         
-        # --- ÉTAPE 2 : PASSWORD (MÉTHODE BLINDÉE) ---
+        # --- ÉTAPE 2 : PASSWORD ---
         time.sleep(4)
         log("🔒 Saisie du mot de passe...")
         pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
@@ -112,10 +112,15 @@ def run_scraper_history():
         log("⏳ Attente de redirection vers France Galop (10s)...")
         time.sleep(10)
 
-        # --- ANALYSE DES ENTRAINEURS (Logique originale conservée) ---
-        for trainer_url in URLS_ENTRAINEURS:
+        # --- ÉTAPE 3 : ANALYSE ---
+        for i, trainer_url in enumerate(URLS_ENTRAINEURS):
             log(f"Analyse de l'entraîneur : {trainer_url}")
             driver.get(trainer_url)
+            time.sleep(5)
+            
+            # --- CAPTURE D'ÉCRAN DE CONTRÔLE ---
+            driver.save_screenshot(f"gain_check_trainer_{i}.png")
+            log(f"📸 Capture d'écran effectuée : gain_check_trainer_{i}.png")
             
             try:
                 wait.until(EC.presence_of_element_located((By.ID, "dernieres-courses")))
@@ -143,7 +148,7 @@ def run_scraper_history():
                         rank = match_place.group(1)
                         line = f"🏆 *{horse_name}* ({rank}e)\n📅 {raw_date} | 📍 {hippodrome}\n💰 Gain : {prize}€\n👤 Entr: {trainer_name}"
                         final_report.append(line)
-                        print(f"  ✅ Retenu : {horse_name} ({rank}e)")
+                        log(f"  ✅ Retenu : {horse_name} ({rank}e)")
 
         if final_report:
             header = f"💰 *TOP PERFORMANCES (7 derniers jours)*\n\n"
@@ -154,7 +159,7 @@ def run_scraper_history():
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
-        driver.save_screenshot("gain_error.png")
+        driver.save_screenshot("gain_error_final.png")
     finally:
         driver.quit()
         log("🏁 Fin.")
