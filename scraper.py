@@ -2,7 +2,6 @@ import os
 import re
 import time
 import requests
-import base64
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -28,11 +27,43 @@ GREEN_API_URL = os.getenv("GREEN_API_URL")
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
+def translate_performance(musique):
+    if not musique or musique == "N/A": return "Aucune performance récente"
+    mapping_disc = {'p': 'Plat', 's': 'Steeple', 'h': 'Haies', 'c': 'Cross', 'a': 'Attelé', 'm': 'Monté'}
+    mapping_inc = {'A': 'Arrêté', 'T': 'Tombé', 'D': 'Disqualifié', 'R': 'Rétrogradé'}
+    parts = re.split(r'(\(\d+\))', musique)
+    decoded_parts = []
+    current_year = "2026"
+    for part in parts:
+        if re.match(r'\(\d+\)', part):
+            current_year = "20" + part.strip('()')
+            continue
+        matches = re.findall(r'([0-9A-Z])([a-z])', part)
+        for rank, disc in matches:
+            d_name = mapping_disc.get(disc, disc)
+            r_text = f"{rank}er" if rank == "1" else (f"{rank}e" if rank.isdigit() else mapping_inc.get(rank, rank))
+            decoded_parts.append(f"{r_text} en {d_name} ({current_year})")
+    return " | ".join(decoded_parts[:3])
+
+def clean_text(text):
+    if not text: return ""
+    cleaned = re.sub(r"[^a-zA-Z0-9/:\. '()]", '', text)
+    return " ".join(cleaned.split()).strip()
+
 def get_pure_horse_name(full_name):
     return re.split(r'\s[A-Z]\.', full_name)[0].strip()
 
 def normalize_for_xpath(text):
     return re.sub(r'[^a-z0-9]', '', text.lower())
+
+def send_whatsapp_notification(content):
+    if not GREEN_API_URL: return
+    payload = {"chatId": "33678723278-1540128478@g.us", "message": content}
+    try:
+        requests.post(GREEN_API_URL, json=payload, timeout=15)
+        log("📲 WhatsApp envoyé.")
+    except Exception as e:
+        log(f"❌ Erreur WhatsApp : {e}")
 
 def run_scraper():
     chrome_options = Options()
@@ -43,110 +74,112 @@ def run_scraper():
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 20)
+    wait = WebDriverWait(driver, 30)
     
+    today = datetime.now().strftime("%d/%m/%Y")
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+    today_results = []
+    seen_runners = set()
+
     try:
         log("🌐 Navigation vers la Home...")
         driver.get(URL_HOME)
         
-        # Gestion des cookies
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
-            log("🍪 Cookies acceptés.")
-        except:
-            log("ℹ️ Pas de bannière cookies.")
+        except: pass
 
-        log("🔑 Clic sur le bouton de connexion...")
+        log("🔑 Connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
-        
-        # --- PHASE DE DIAGNOSTIC DE LA PAGE DE LOGIN ---
-        time.sleep(5) # Laisser le temps à Azure de charger
-        log(f"📄 URL actuelle : {driver.current_url}")
-        
-        # 1. Analyse des IFrames (Cause fréquente de blocage sur Azure)
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        log(f"🔎 Nombre d'iframes détectées : {len(iframes)}")
-        for i, frame in enumerate(iframes):
-            log(f"   - IFrame {i}: ID={frame.get_attribute('id')}, Name={frame.get_attribute('name')}, Src={frame.get_attribute('src')[:50]}...")
 
-        # 2. Recherche exhaustive du champ Email
-        log("🔍 Recherche du champ Email dans le DOM...")
-        potential_inputs = driver.find_elements(By.TAG_NAME, "input")
-        log(f"📊 Nombre d'inputs trouvés : {len(potential_inputs)}")
-        for inp in potential_inputs:
-            log(f"   - Input: ID='{inp.get_attribute('id')}', Type='{inp.get_attribute('type')}', Name='{inp.get_attribute('name')}', Placeholder='{inp.get_attribute('placeholder')}'")
-
-        # --- TENTATIVE DE SAISIE AVANCÉE ---
-        log("📧 Tentative de saisie de l'identifiant...")
-        
-        # On cherche l'élément le plus probable
-        selectors = ["#email", "input[type='email']", "input[name='Email Address']", "input[placeholder*='Email']"]
-        email_el = None
-        for sel in selectors:
-            try:
-                email_el = driver.find_element(By.CSS_SELECTOR, sel)
-                if email_el:
-                    log(f"✅ Élément trouvé avec le sélecteur : {sel}")
-                    break
-            except: continue
-
-        if not email_el:
-            log("❌ Aucun champ email trouvé avec les sélecteurs standards.")
-            driver.save_screenshot("debug_no_email_field.png")
-            # Loguer le code source partiel pour inspection
-            log("📝 Code source réduit de la page :")
-            print(driver.page_source[:2000]) 
-            return
-
-        # Saisie par injection brutale et simulation
-        driver.execute_script("arguments[0].scrollIntoView(true);", email_el)
-        time.sleep(1)
-        
-        # Simulation humaine
+        # 📧 Saisie Email (Méthode validée par vos logs)
+        email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username'], input[type='email']")))
         actions = ActionChains(driver)
         actions.move_to_element(email_el).click().send_keys(EMAIL_SENDER).perform()
-        
-        # Double vérification JS
         driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_el)
         driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_el)
         
-        log(f"✍️ Valeur injectée. Longueur détectée par JS : {driver.execute_script('return arguments[0].value.length;', email_el)}")
-        driver.save_screenshot("debug_step1_email.png")
+        btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
+        driver.execute_script("arguments[0].click();", btn_next)
+        time.sleep(4)
 
-        # Clic sur Suivant
-        try:
-            btn_next = driver.find_element(By.ID, "next")
-            log("🔘 Bouton Next trouvé, clic...")
-            driver.execute_script("arguments[0].click();", btn_next)
-        except:
-            log("⚠️ Bouton 'next' non trouvé par ID, tentative par CSS...")
-            btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next")
-            driver.execute_script("arguments[0].click();", btn_next)
-
-        time.sleep(3)
-        log(f"📄 URL après clic Next : {driver.current_url}")
-        driver.save_screenshot("debug_step2_after_next.png")
-
-        # --- PHASE PASSWORD ---
-        log("🔒 Tentative de saisie du mot de passe...")
-        pwd_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
+        # 🔒 Saisie Password
+        pwd_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
         driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_field)
         driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_field)
         
-        btn_login = driver.find_element(By.CSS_SELECTOR, "#next, button[type='submit']")
+        btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        # Attente de redirection finale
+        # Attente redirection
         wait.until(EC.url_contains("france-galop.com"))
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
         log("✅ Authentification réussie.")
 
+        # --- DÉBUT DE L'ANALYSE DES PARTANTS ---
+        for trainer_url in URLS_ENTRAINEURS:
+            log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
+            driver.get(trainer_url)
+            time.sleep(5)
+
+            rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
+            trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
+
+            runners = []
+            for row in rows:
+                txt = row.text
+                if today in txt or tomorrow in txt:
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if not cells: continue
+                    full_name = clean_text(cells[0].text)
+                    try:
+                        url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
+                        if f"{full_name}_{url}" not in seen_runners:
+                            seen_runners.add(f"{full_name}_{url}")
+                            runners.append({
+                                'date': today if today in txt else tomorrow,
+                                'full_name': full_name,
+                                'pure_name': get_pure_horse_name(full_name),
+                                'url': url,
+                                'trainer': trainer_name,
+                                'course_label': clean_text(cells[4].text)
+                            })
+                    except: continue
+
+            for r in runners:
+                log(f"   🐎 Extraction : {r['pure_name']}")
+                driver.get(r['url'])
+                time.sleep(3)
+                try:
+                    search_key = normalize_for_xpath(r['pure_name'])
+                    xpath_row = f"//tr[contains(translate(translate(., \"' \", ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{search_key}')]"
+                    row_cheval = wait.until(EC.presence_of_element_located((By.XPATH, xpath_row)))
+                    cells = row_cheval.find_elements(By.TAG_NAME, "td")
+                    
+                    num_cheval = "".join(filter(str.isdigit, cells[0].text))
+                    raw_perf = clean_text(cells[-2].text) 
+                    decoded_perf = translate_performance(raw_perf)
+
+                    msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n"
+                                f"📊 *Musique :* {decoded_perf}\n"
+                                f"👤 Entr: {r['trainer']}")
+                    
+                    if r['date'] == today:
+                        today_results.append(msg_line)
+                except: pass
+
+        if today_results:
+            final_msg = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
+            send_whatsapp_notification(final_msg)
+        else:
+            log("📝 Aucun partant pour aujourd'hui.")
+
     except Exception as e:
-        log(f"💥 ERREUR CRITIQUE : {str(e)}")
-        driver.save_screenshot("debug_final_crash.png")
+        log(f"💥 Erreur globale : {e}")
     finally:
         driver.quit()
-        log("🏁 Fin de session.")
+        log("🏁 Fin.")
 
 if __name__ == "__main__":
     run_scraper()
