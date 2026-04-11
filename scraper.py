@@ -12,7 +12,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 # --- CONFIGURATION ---
-URL_LOGIN = "https://www.france-galop.com/fr/login"
+URL_HOME = "https://www.france-galop.com/fr"
 URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/Z1FxYXQ3cFJyM0ZlUitJQTlmUTNiUT09#partants",
     "https://www.france-galop.com/fr/entraineur/U0VNb0JtQlZ1bUphYndFTnJjSzg4dz09#partants"
@@ -26,22 +26,16 @@ def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
 def translate_performance(musique):
-    """ Décode la musique (ex: 1s8s(25)Ah) et ne garde que les 3 dernières perfs """
     if not musique or musique == "N/A": return "Aucune performance récente"
-    
     mapping_disc = {'p': 'Plat', 's': 'Steeple', 'h': 'Haies', 'c': 'Cross', 'a': 'Attelé', 'm': 'Monté'}
     mapping_inc = {'A': 'Arrêté', 'T': 'Tombé', 'D': 'Disqualifié', 'R': 'Rétrogradé'}
-    
     parts = re.split(r'(\(\d+\))', musique)
     decoded_parts = []
     current_year = "2026"
-
     for part in parts:
         if re.match(r'\(\d+\)', part):
             current_year = "20" + part.strip('()')
             continue
-        
-        # Capture le rang/incident et la discipline (ex: 1s, Ah)
         matches = re.findall(r'([0-9A-Z])([a-z])', part)
         for rank, disc in matches:
             d_name = mapping_disc.get(disc, disc)
@@ -52,8 +46,6 @@ def translate_performance(musique):
             else:
                 inc_text = mapping_inc.get(rank, rank)
                 decoded_parts.append(f"{inc_text} en {d_name} ({current_year})")
-
-    # Limitation aux 3 dernières performances pour la clarté
     return " | ".join(decoded_parts[:3])
 
 def clean_text(text):
@@ -62,7 +54,6 @@ def clean_text(text):
     return " ".join(cleaned.split()).strip()
 
 def get_pure_horse_name(full_name):
-    """ Isole le nom du cheval des infos techniques """
     pure_name = re.split(r'\s[A-Z]\.', full_name)[0] 
     pure_name = re.split(r'\s\d\sa\.', pure_name)[0] 
     return pure_name.strip()
@@ -85,10 +76,13 @@ def run_scraper():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
+    # Ajout d'un User-Agent pour éviter le blocage
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 15)
+    wait = WebDriverWait(driver, 20)
     
     today = datetime.now().strftime("%d/%m/%Y")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
@@ -96,16 +90,34 @@ def run_scraper():
     seen_runners = set()
 
     try:
-        log("🔑 Connexion France Galop...")
-        driver.get(URL_LOGIN)
+        log("🌐 Accès à France Galop...")
+        driver.get(URL_HOME)
+        
+        # Gestion des cookies
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        driver.find_element(By.NAME, "name").send_keys(EMAIL_SENDER)
-        driver.find_element(By.NAME, "pass").send_keys(FG_PASSWORD)
-        driver.execute_script("arguments[0].click();", driver.find_element(By.CSS_SELECTOR, "#user-login-form button[type='submit']"))
-        time.sleep(5)
+        # Étape 1 : Clic sur le bouton de connexion (Espace Pro/Public)
+        log("🔑 Redirection vers l'espace de connexion...")
+        login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
+        driver.execute_script("arguments[0].click();", login_btn)
+
+        # Étape 2 : Saisie Email (Azure AD)
+        log("📧 Saisie de l'identifiant...")
+        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email")))
+        email_field.send_keys(EMAIL_SENDER)
+        driver.find_element(By.ID, "next").click()
+
+        # Étape 3 : Saisie Mot de passe (Azure AD)
+        log("🔒 Saisie du mot de passe...")
+        pwd_field = wait.until(EC.visibility_of_element_located((By.ID, "password")))
+        pwd_field.send_keys(FG_PASSWORD)
+        driver.find_element(By.ID, "next").click()
+
+        # Attente du retour sur le site (vérification de la session)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
+        log("✅ Authentification réussie.")
 
         for trainer_url in URLS_ENTRAINEURS:
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
@@ -120,8 +132,12 @@ def run_scraper():
                 txt = row.text
                 if today in txt or tomorrow in txt:
                     cells = row.find_elements(By.TAG_NAME, "td")
+                    if not cells: continue
+                    
                     full_name = clean_text(cells[0].text)
-                    url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
+                    try:
+                        url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
+                    except: continue
                     
                     if f"{full_name}_{url}" in seen_runners: continue
                     seen_runners.add(f"{full_name}_{url}")
@@ -138,10 +154,10 @@ def run_scraper():
             for r in runners:
                 log(f"   🐎 Extraction : {r['pure_name']}")
                 driver.get(r['url'])
-                time.sleep(4)
+                time.sleep(3)
                 
                 try:
-                    # 1. Infos course (Heure, Hippo, N°)
+                    # Extraction infos course
                     details = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
                     heure, hippo, n_course = "00:00", "Inconnu", "?"
                     for p in details:
@@ -154,31 +170,15 @@ def run_scraper():
                             if "," in p_txt: hippo = clean_text(p_txt.split(",")[-1])
                             break
                     
-                    if n_course == "?":
-                        try:
-                            m_n_title = re.search(r'C(\d+)', driver.find_element(By.TAG_NAME, "h1").text)
-                            if m_n_title: n_course = m_n_title.group(1)
-                        except: pass
-
-                    # 2. Localisation ligne et perfs
+                    # Localisation de la ligne du cheval dans le tableau
                     search_key = normalize_for_xpath(r['pure_name'])
                     xpath_row = f"//tr[contains(translate(translate(., \"' \", ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{search_key}')]"
                     row_cheval = wait.until(EC.presence_of_element_located((By.XPATH, xpath_row)))
                     cells = row_cheval.find_elements(By.TAG_NAME, "td")
                     
-                    perf_index = 11
-                    try:
-                        headers = driver.find_elements(By.CSS_SELECTOR, "thead th")
-                        for i, h in enumerate(headers):
-                            if "Performances" in h.text:
-                                perf_index = i
-                                break
-                    except: pass
-
                     num_cheval = "".join(filter(str.isdigit, cells[0].text))
-                    raw_perf = clean_text(cells[perf_index].text) if len(cells) > perf_index else "N/A"
-                    
-                    # Décodage limité aux 3 dernières
+                    # La colonne performance est souvent la 11ème ou 12ème (index 10-11)
+                    raw_perf = clean_text(cells[-2].text) # Sécurité : souvent l'avant-dernière colonne
                     decoded_perf = translate_performance(raw_perf)
 
                     msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n"
@@ -190,9 +190,6 @@ def run_scraper():
                     if r['date'] == today:
                         today_results.append(msg_line)
                         log(f"      ✅ OK : {r['pure_name']}")
-                    else:
-                        log(f"      📅 [DEMAIN] {r['pure_name']}")
-
                 except Exception as e:
                     log(f"      ⚠️ Erreur détails {r['pure_name']} : {str(e)[:50]}")
 
@@ -204,6 +201,7 @@ def run_scraper():
 
     except Exception as e:
         log(f"💥 Erreur globale : {e}")
+        driver.save_screenshot("debug_error.png")
     finally:
         driver.quit()
         log("🏁 Fin.")
