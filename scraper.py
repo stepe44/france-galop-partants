@@ -82,52 +82,50 @@ def run_scraper():
     seen_runners = set()
 
     try:
-        log("🌐 Navigation vers la Home...")
+        log("🌐 Navigation vers France Galop...")
         driver.get(URL_HOME)
         
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
         except: pass
 
-        log("🔑 Connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- ÉTAPE 1 : EMAIL (Sélecteur 'username' identifié par vos logs) ---
-        log("📧 Tentative de saisie de l'identifiant...")
-        email_el = wait.until(EC.presence_of_element_located((By.NAME, "username")))
+        # --- CONNEXION BLINDÉE (Basée sur les logs de succès) ---
+        time.sleep(5)
+        log("📧 Saisie de l'identifiant...")
         
-        actions = ActionChains(driver)
-        actions.move_to_element(email_el).click().perform()
-        time.sleep(1)
+        # Ciblage par placeholder car l'ID est instable
+        email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
         
-        # Injection directe JavaScript car l'ID est vide
+        # Injection forcée
         driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_el)
         driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_el)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", email_el)
         
-        driver.save_screenshot("debug_1_email_typed.png")
-        btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, #next, .next")))
+        driver.save_screenshot("debug_1_email.png")
+        
+        btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next, #next")
         driver.execute_script("arguments[0].click();", btn_next)
-        time.sleep(4)
-
-        # --- ÉTAPE 2 : PASSWORD ---
-        log("🔒 Tentative de saisie du mot de passe...")
-        pwd_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], input[name='passwd'], #password")))
         
-        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_field)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_field)
-
-        driver.save_screenshot("debug_2_password_typed.png")
-        btn_login = driver.find_element(By.CSS_SELECTOR, "button#next, #next, button[type='submit']")
+        # --- PASSWORD ---
+        time.sleep(4)
+        log("🔒 Saisie du mot de passe...")
+        pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
+        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_el)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_el)
+        
+        driver.save_screenshot("debug_2_pwd.png")
+        
+        btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        # Redirection vers le domaine principal
+        # Attente redirection finale
         wait.until(EC.url_contains("france-galop.com"))
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='logout'], .user-connected")))
         log("✅ Authentification réussie.")
 
-        # --- DÉBUT DE L'ANALYSE DES PARTANTS (Restauré) ---
+        # --- SCRAPING ---
         for trainer_url in URLS_ENTRAINEURS:
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
@@ -147,14 +145,7 @@ def run_scraper():
                         url = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
                         if f"{full_name}_{url}" not in seen_runners:
                             seen_runners.add(f"{full_name}_{url}")
-                            runners.append({
-                                'date': today if today in txt else tomorrow,
-                                'full_name': full_name,
-                                'pure_name': get_pure_horse_name(full_name),
-                                'url': url,
-                                'trainer': trainer_name,
-                                'course_label': clean_text(cells[4].text)
-                            })
+                            runners.append({'date': today if today in txt else tomorrow, 'full_name': full_name, 'pure_name': get_pure_horse_name(full_name), 'url': url, 'trainer': trainer_name, 'course_label': clean_text(cells[4].text)})
                     except: continue
 
             for r in runners:
@@ -166,17 +157,11 @@ def run_scraper():
                     xpath_row = f"//tr[contains(translate(translate(., \"' \", ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{search_key}')]"
                     row_cheval = wait.until(EC.presence_of_element_located((By.XPATH, xpath_row)))
                     cells = row_cheval.find_elements(By.TAG_NAME, "td")
-                    
                     num_cheval = "".join(filter(str.isdigit, cells[0].text))
-                    raw_perf = clean_text(cells[-2].text) 
+                    raw_perf = clean_text(cells[-2].text)
                     decoded_perf = translate_performance(raw_perf)
-
-                    msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n"
-                                f"📊 *Musique :* {decoded_perf}\n"
-                                f"👤 Entr: {r['trainer']}")
-                    
-                    if r['date'] == today:
-                        today_results.append(msg_line)
+                    msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n📊 *Musique :* {decoded_perf}\n👤 Entr: {r['trainer']}")
+                    if r['date'] == today: today_results.append(msg_line)
                 except: pass
 
         if today_results:
@@ -186,7 +171,7 @@ def run_scraper():
             log("📝 Aucun partant pour aujourd'hui.")
 
     except Exception as e:
-        log(f"💥 Erreur globale : {e}")
+        log(f"💥 Erreur : {e}")
         driver.save_screenshot("debug_final_error.png")
     finally:
         driver.quit()
