@@ -87,52 +87,64 @@ def run_scraper():
         
         try:
             wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
-            log("🍪 Cookies gérés.")
+            log("🍪 Cookies acceptés.")
         except: pass
 
-        log("🔑 Ouverture de l'interface de connexion...")
+        log("🔑 Ouverture du portail de connexion...")
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='login'], .user-link, .login")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # --- CONNEXION ---
-        time.sleep(5)
-        log(f"📄 Page login chargée : {driver.current_url}")
-        
+        # --- ÉTAPE 1 : EMAIL (SIMULATION HUMAINE CARACTÈRE PAR CARACTÈRE) ---
         log("📧 Saisie de l'identifiant...")
+        time.sleep(5)
         email_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='Email'], input[name='username']")))
-        driver.execute_script(f"arguments[0].value = '{EMAIL_SENDER}';", email_el)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_el)
-        driver.save_screenshot("step1_email.png")
+        
+        email_el.clear()
+        for char in EMAIL_SENDER:
+            email_el.send_keys(char)
+            time.sleep(0.1) # Simule une vitesse de frappe humaine
+            
+        # Déclenchement forcé de la validation Azure (Crucial pour éviter l'erreur "Enter a valid email address")
+        driver.execute_script("""
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+        """, email_el)
+        
+        time.sleep(1)
+        driver.save_screenshot("step1_email_ready.png")
         
         btn_next = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], .next, #next")
         driver.execute_script("arguments[0].click();", btn_next)
         
+        # --- ÉTAPE 2 : PASSWORD ---
         time.sleep(4)
         log("🔒 Saisie du mot de passe...")
         pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
-        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_el)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", pwd_el)
-        driver.save_screenshot("step2_password.png")
         
+        driver.execute_script(f"arguments[0].value = '{FG_PASSWORD}';", pwd_el)
+        driver.execute_script("""
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+        """, pwd_el)
+        
+        driver.save_screenshot("step2_password_ready.png")
         btn_login = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], #next")
         driver.execute_script("arguments[0].click();", btn_login)
 
-        log("⏳ Attente de la redirection finale (10s)...")
+        log("⏳ Attente de redirection vers France Galop...")
         time.sleep(10)
-        log(f"📄 URL après authentification : {driver.current_url}")
 
-        # --- SCRAPING ---
+        # --- ÉTAPE 3 : SCRAPING DES PARTANTS ---
         for trainer_url in URLS_ENTRAINEURS:
             log(f"🌐 Analyse entraîneur : {trainer_url.split('/')[-1][:20]}")
             driver.get(trainer_url)
             time.sleep(5)
 
             rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
-            log(f"📊 {len(rows)} chevaux détectés dans le tableau.")
-            
-            if not rows and "login" in driver.current_url:
-                log("🚨 ERREUR : Session perdue, le script est revenu sur le login.")
-                driver.save_screenshot("error_session_lost.png")
+            if not rows:
+                log(f"⚠️ Aucun tableau pour {trainer_url}. Vérification de la session...")
+                driver.save_screenshot("debug_scraping_empty.png")
                 continue
 
             trainer_name = clean_text(driver.find_element(By.CSS_SELECTOR, "h1").text).replace("ENTRAINEUR", "").strip()
@@ -151,10 +163,8 @@ def run_scraper():
                             runners.append({'date': today if today in txt else tomorrow, 'full_name': full_name, 'pure_name': get_pure_horse_name(full_name), 'url': url, 'trainer': trainer_name, 'course_label': clean_text(cells[4].text)})
                     except: continue
 
-            log(f"🐎 {len(runners)} partants retenus pour aujourd'hui/demain.")
-
             for r in runners:
-                log(f"   🔍 Extraction détails : {r['pure_name']} (URL: {r['url'].split('/')[-1][:15]}...)")
+                log(f"   🐎 Extraction : {r['pure_name']}")
                 driver.get(r['url'])
                 time.sleep(3)
                 try:
@@ -168,12 +178,9 @@ def run_scraper():
                     
                     msg_line = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n📊 *Musique :* {decoded_perf}\n👤 Entr: {r['trainer']}")
                     if r['date'] == today: today_results.append(msg_line)
-                    log(f"      ✅ OK : {r['pure_name']} (N°{num_cheval})")
-                except Exception as e:
-                    log(f"      ⚠️ Erreur extraction {r['pure_name']} : {str(e)[:50]}")
+                except: pass
 
         if today_results:
-            log(f"📤 Envoi de la notification ({len(today_results)} partants)...")
             final_msg = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
             send_whatsapp_notification(final_msg)
         else:
