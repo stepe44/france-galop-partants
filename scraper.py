@@ -26,69 +26,70 @@ def log(message):
 
 def run_scraper():
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
+    
+    # --- CHANGEMENT MAJEUR : PLUS DE MODE HEADLESS ---
+    # Sur GitHub Actions, ce script DOIT être lancé avec 'xvfb-run'
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # Paramètres de furtivité pour éviter "Accès Refusé"
+    # Désactivation des drapeaux d'automatisation
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
+    
+    # User-agent réaliste
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    
+    # Suppression profonde du flag webdriver
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
-    wait = WebDriverWait(driver, 20)
+    wait = WebDriverWait(driver, 25)
     today = datetime.now().strftime("%d/%m/%Y")
     today_results = []
 
     try:
         for i, trainer_url in enumerate(URLS_ENTRAINEURS):
-            log(f"🌐 Navigation vers : {trainer_url}")
+            log(f"🌐 Accès à la fiche : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
             time.sleep(5)
 
+            # --- AUTHENTIFICATION SI BLOQUÉ ---
             if "ciamlogin.com" in driver.current_url:
-                log("🔑 Écran de connexion détecté...")
+                log("🔑 Connexion requise sur la page...")
                 
-                # 1. Saisie Email
-                email_field = wait.until(EC.element_to_be_clickable((By.NAME, "username")))
-                for char in EMAIL_SENDER: 
-                    email_field.send_keys(char)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_field)
+                # Email
+                email_el = wait.until(EC.presence_of_element_located((By.NAME, "username")))
+                for char in EMAIL_SENDER: email_el.send_keys(char)
+                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_el)
+                driver.find_element(By.ID, "next").click()
                 
-                # Clic Next (Sélecteur renforcé)
-                btn_next = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, button[type='submit'], .next")))
-                driver.execute_script("arguments[0].click();", btn_next)
-                log("📧 Email validé.")
-                
-                # 2. Saisie Password
+                # Password (Saisie blindée caractère par caractère)
                 time.sleep(5)
-                pwd_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='password']")))
+                pwd_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
                 for char in FG_PASSWORD:
-                    pwd_field.send_keys(char)
+                    pwd_el.send_keys(char)
                     time.sleep(0.05)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_field)
                 
-                # Clic Sign-in (Sélecteur renforcé)
-                btn_signin = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button#next, button[type='submit'], .sign-in")))
-                driver.execute_script("arguments[0].click();", btn_signin)
-                log("🔒 Mot de passe validé. Redirection...")
+                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_el)
+                driver.save_screenshot(f"debug_auth_step_{i}.png")
+                driver.find_element(By.ID, "next").click()
                 
+                log("⏳ Attente de redirection post-auth...")
                 time.sleep(15)
 
-            # --- VÉRIFICATION POST-CONNEXION ---
-            if trainer_url not in driver.current_url:
-                driver.get(trainer_url)
-                time.sleep(8)
-
-            driver.save_screenshot(f"check_final_{i}.png")
+            # --- VÉRIFICATION ÉTAT FINAL ---
+            driver.save_screenshot(f"check_final_screen_{i}.png")
+            
+            if "Accès refusé" in driver.page_source:
+                log("❌ ÉCHEC : Le site détecte encore le robot (Accès refusé).")
+                continue
 
             try:
-                # Activation onglet Partants
-                tab = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href*='#partants']")))
+                # Activation de l'onglet par injection JS pour plus de discrétion
+                tab = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='#partants']")))
                 driver.execute_script("arguments[0].click();", tab)
                 time.sleep(5)
                 
@@ -98,17 +99,19 @@ def run_scraper():
                 
                 for row in rows:
                     if today in row.text:
-                        name = row.find_elements(By.TAG_NAME, "td")[0].text.strip()
+                        name = row.find_elements(By.TAG_NAME, "td")[0].text.strip().split(' (')[0]
                         today_results.append(f"🏇 {name}")
-            except:
-                log(f"⚠️ Aucun tableau visible pour {trainer_url}")
+            except Exception as e:
+                log(f"⚠️ Impossible d'accéder au tableau : {str(e)[:50]}")
+
+        if today_results:
+            log(f"📤 Résultats : {len(today_results)} partants détectés.")
 
     except Exception as e:
         log(f"💥 Erreur Critique : {e}")
-        driver.save_screenshot("fatal_error.png")
     finally:
         driver.quit()
-        log("🏁 Fin de session.")
+        log("🏁 Session terminée.")
 
 if __name__ == "__main__":
     run_scraper()
