@@ -75,37 +75,42 @@ def send_whatsapp(message):
     except Exception as e:
         log(f"❌ Erreur WhatsApp : {e}")
 
-# --- PMU API HELPERS --- 
 # --- PMU API HELPERS ---
 def fetch_json_with_driver(driver, url, context=""):
-    """Lit l'API PMU et affiche explicitement le résultat de chaque requête."""
+    """Lit l'API PMU de manière robuste via regex sur le code source."""
     import urllib.parse
+    import re
     
     try:
         log(f"   [DEBUG-PMU] [{context}] 🌐 GET {url}")
         driver.get(url)
-        time.sleep(1.5) 
+        time.sleep(2) 
         
         page_source = driver.page_source
         
         if "ERR_NAME_NOT_RESOLVED" in page_source or "ERR_CONNECTION" in page_source:
-            log(f"   [DEBUG-PMU] [{context}] ⚠️ Blocage DNS. Bascule sur Proxy...")
             encoded_url = urllib.parse.quote(url, safe='')
             proxy_url = f"https://api.allorigins.win/raw?url={encoded_url}"
             driver.get(proxy_url)
             time.sleep(2)
+            page_source = driver.page_source
             
         try:
-            json_text = driver.find_element(By.TAG_NAME, "pre").text
+            # Extraction infaillible du JSON depuis le code HTML brut
+            match = re.search(r'(?s)<pre[^>]*>(.*?)</pre>', page_source)
+            if match:
+                json_text = match.group(1).strip()
+            else:
+                json_text = driver.find_element(By.TAG_NAME, "pre").get_attribute("textContent")
+                
             data = json.loads(json_text)
-            log(f"   [DEBUG-PMU] [{context}] ✅ JSON lu ! (Clés racines: {list(data.keys())[:5]})")
+            log(f"   [DEBUG-PMU] [{context}] ✅ JSON extrait avec succès !")
             return data
         except Exception as e:
-            log(f"   [DEBUG-PMU] [{context}] ❌ Impossible de lire la balise <pre> JSON.")
-            log(f"   [DEBUG-PMU] [{context}] Aperçu page: {driver.page_source[:150]}...")
+            log(f"   [DEBUG-PMU] [{context}] ❌ Échec de la lecture JSON.")
             return None
     except Exception as e:
-        log(f"   [DEBUG-PMU] [{context}] ❌ Erreur réseau critique: {e}")
+        log(f"   [DEBUG-PMU] [{context}] ❌ Erreur réseau : {e}")
         return None
 
 def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
@@ -113,27 +118,19 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
     base_url = "https://offline.turfinfo.api.pmu.fr/rest/client/7/programme"
     
     try:
-        log(f"   [DEBUG-PMU] 🏁 START Recherche | Cheval: {horse_name} | Hippo: {hippodrome_name} | Date: {formatted_date}")
         programme = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}", "Programme")
-        
-        if not programme or 'programme' not in programme: 
-            log("   [DEBUG-PMU] ❌ Le JSON du programme est vide ou invalide.")
-            return "Indisponible"
-        
-        reunions = programme['programme'].get('reunions', [])
-        log(f"   [DEBUG-PMU] 📅 {len(reunions)} réunions trouvées ce jour-là.")
+        if not programme or 'programme' not in programme: return "Indisponible"
         
         fg_hippo_clean = re.sub(r'[^A-Z]', '', hippodrome_name.upper())
         fg_hippo_short = fg_hippo_clean[:6]
         
-        for reunion in reunions:
+        for reunion in programme['programme'].get('reunions', []):
             hippo_data = reunion.get('hippodrome', {})
             r_name = hippo_data.get('libelleCourt', '') + hippo_data.get('libelleLong', '') + reunion.get('libelle', '')
             r_name_clean = re.sub(r'[^A-Z]', '', r_name.upper())
             
             if fg_hippo_short and fg_hippo_short in r_name_clean:
                 r_num = reunion.get('numOfficiel')
-                log(f"   [DEBUG-PMU] 🏟️ Hippodrome matché ! C'est la R{r_num} ({r_name})")
                 
                 for course in reunion.get('courses', []):
                     c_num = course.get('numOrdre')
@@ -143,79 +140,65 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
                     
                     for p in partants.get('participants', []):
                         if horse_name.upper() in p.get('nom', '').upper():
-                            num_p = p.get('numero') or p.get('numProno') or p.get('num')
-                            log(f"   [DEBUG-PMU] 🐎 Cheval matché ! {p.get('nom')} porte le N°{num_p}.")
+                            # La bonne clé pour l'API "Offline" est numPmu
+                            num_p = p.get('numPmu') or p.get('numero') or p.get('numProno') or p.get('num')
+                            log(f"   [DEBUG-PMU] 🐎 Cheval matché ! N°{num_p}")
                             return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, num_p, horse_name)
                             
-        log(f"   [DEBUG-PMU] ❌ Cheval '{horse_name}' introuvable ou Hippodrome non matché.")
         return "Non trouvé"
-        
     except Exception as e:
-        log(f"   [DEBUG-PMU] 💥 Crash inattendu API PMU: {e}")
         return "Erreur API"
 
 def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
-    urls_a_tester = [
-        f"{base_url}/{date}/R{r}/C{c}/rapports-definitifs",
-        f"{base_url}/{date}/R{r}/C{c}/rapports"
-    ]
+    # L'API Offline utilise exclusivement l'endpoint rapports-definitifs
+    url = f"{base_url}/{date}/R{r}/C{c}/rapports-definitifs"
     
-    data = None
-    for url in urls_a_tester:
-        data = fetch_json_with_driver(driver, url, f"Rapports R{r}C{c}")
-        if data: break
-            
-    if not data: 
-        log("   [DEBUG-PMU] ❌ Aucun JSON de rapports lu pour cette course.")
-        return "Pas de rapport"
+    data = fetch_json_with_driver(driver, url, f"Rapports R{r}C{c}")
+    if not data: return "Pas de rapport"
     
     try:
-        # Impression brute de l'architecture pour le débogage
-        log(f"   [DEBUG-PMU] 🔍 Structure RAPPORTS brute : {str(data)[:250]}...")
-        
-        if isinstance(data, dict):
-            paris_list = data.get('rapports', data.get('rapport', []))
-        elif isinstance(data, list):
+        # L'API renvoie un Array [] directement, et non un Dictionnaire {}
+        if isinstance(data, list):
             paris_list = data
+        elif isinstance(data, dict):
+            paris_list = data.get('rapports', data.get('rapport', []))
         else:
             return "Pas de rapport"
             
         sg, sp = 0.0, 0.0
-        gagnants_debug = []
         
         for pari in paris_list:
             type_pari = pari.get('typePari', '')
-            divs = pari.get('rapports', pari.get('dividendes', pari.get('gains', [])))
             
-            if 'GAGNANT' in type_pari or type_pari == 'SG':
-                for d in divs:
+            if type_pari in ['SIMPLE_GAGNANT', 'SG', 'E_SIMPLE_GAGNANT']:
+                for d in pari.get('dividendes', []):
                     comb = d.get('combinaison', d.get('chevaux', d.get('numero', '')))
                     comb_str = str(comb[0]) if isinstance(comb, list) and comb else str(comb)
-                    gagnants_debug.append(f"G({comb_str})")
+                    
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
-                        val = d.get('dividende', d.get('dividendePourUnEuro', d.get('montant', 0)))
+                        val = d.get('dividende', d.get('dividendePourUnEuro', 0))
                         sg = float(val) / 100.0 if float(val) > 50 else float(val)
                         
-            if 'PLACE' in type_pari or type_pari == 'SP':
-                for d in divs:
+            if type_pari in ['SIMPLE_PLACE', 'SP', 'E_SIMPLE_PLACE']:
+                for d in pari.get('dividendes', []):
                     comb = d.get('combinaison', d.get('chevaux', d.get('numero', '')))
                     comb_str = str(comb[0]) if isinstance(comb, list) and comb else str(comb)
-                    gagnants_debug.append(f"P({comb_str})")
+                    
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
-                        val = d.get('dividende', d.get('dividendePourUnEuro', d.get('montant', 0)))
+                        val = d.get('dividende', d.get('dividendePourUnEuro', 0))
                         sp = float(val) / 100.0 if float(val) > 50 else float(val)
         
         if sg > 0 and sp > 0: return f"Gagnant: {sg:.2f}€ | Placé: {sp:.2f}€"
         if sg > 0: return f"Gagnant: {sg:.2f}€"
         if sp > 0: return f"Placé: {sp:.2f}€"
         
-        log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) introuvable dans les gains. Payés: {list(set(gagnants_debug))}")
+        log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) n'a généré aucun gain SG/SP.")
         return "Pas de rapport"
         
     except Exception as e:
-        log(f"   [DEBUG-PMU] 💥 Erreur d'analyse des dividendes: {e}")
-        return "Erreur rapports"
-        
+        log(f"   [DEBUG-PMU] 💥 Erreur d'analyse JSON: {e}")
+        return "Erreur rapports"        
+
 # --- MAIN ---
 def run_scraper_history():
     chrome_version = get_chrome_main_version()
