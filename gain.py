@@ -72,7 +72,6 @@ def send_whatsapp(message):
 
 # --- PMU API HELPERS ---
 def fetch_json_with_driver(driver, url):
-    """Utilise le navigateur camouflé pour lire l'API PMU et contourner le blocage."""
     try:
         driver.get(url)
         time.sleep(1) 
@@ -82,17 +81,14 @@ def fetch_json_with_driver(driver, url):
         return None
 
 def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
-    """Recherche les rapports PMU via l'API en utilisant le driver."""
     formatted_date = date_str.replace('/', '')
     base_url = "https://online.pmu.fr/rest/client/7/programme"
     
     try:
-        # 1. Récupérer le programme du jour
         programme = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}")
         if not programme or 'programme' not in programme: 
             return "Indisponible"
         
-        # 2. Chercher la réunion et la course
         for reunion in programme['programme'].get('reunions', []):
             if hippodrome_name.upper() in reunion['libelle'].upper() or reunion['libelle'].upper() in hippodrome_name.upper():
                 r_num = reunion['numOfficiel']
@@ -100,7 +96,6 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
                 for course in reunion.get('courses', []):
                     c_num = course['numOrdre']
                     
-                    # Vérifier les participants de cette course
                     partants = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants")
                     if not partants: continue
                     
@@ -146,7 +141,7 @@ def run_scraper_history():
     options.add_argument("--disable-gpu")
    
     driver = uc.Chrome(options=options, version_main=chrome_version)
-    wait = WebDriverWait(driver, 25)
+    wait = WebDriverWait(driver, 35)
     
     today = datetime.now()
     start_date = today - timedelta(days=7)
@@ -169,23 +164,24 @@ def run_scraper_history():
         
         login_elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='login'], .user-link")
         if login_elements:
-            log("🔑 Authentification requise...")
             try:
-                driver.execute_script("arguments[0].click();", login_elements[0])
-                
-                # --- RESTAURATION DE LA MÉTHODE DE SAISIE ORIGINALE ---
+                # ==========================================
+                # DEBUT DU BLOC STRICTEMENT IDENTIQUE A gain(1).py
+                # ==========================================
+                log("🔑 Accès au portail de connexion...")
+                login_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login'], .user-link")))
+                driver.execute_script("arguments[0].click();", login_btn)
+
                 log("📧 Saisie identifiant...")
                 email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='username']")))
-                for char in EMAIL_SENDER: 
-                    email_el.send_keys(char)
-                    time.sleep(0.05)
+                for char in EMAIL_SENDER: email_el.send_keys(char)
                 
                 driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_el)
                 btn_next = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']")))
                 driver.execute_script("arguments[0].click();", btn_next)
                 
-                time.sleep(6) # Délai vital pour Azure AD
-                
+                time.sleep(6)
+
                 log("🔒 Saisie mot de passe...")
                 pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
                 for char in FG_PASSWORD:
@@ -196,7 +192,12 @@ def run_scraper_history():
                 btn_submit = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']")))
                 driver.execute_script("arguments[0].click();", btn_submit)
                 
-                wait.until(EC.presence_of_element_located((By.CLASS_NAME, "user-name")))
+                log("⏳ Stabilisation de la session (20s)...")
+                time.sleep(20)
+                # ==========================================
+                # FIN DU BLOC STRICTEMENT IDENTIQUE A gain(1).py
+                # ==========================================
+                
                 save_cookies(driver)
                 log("✅ Connexion réussie.")
             except Exception as e:
@@ -213,13 +214,17 @@ def run_scraper_history():
         for trainer_url in URLS_ENTRAINEURS:
             log(f"🚀 Analyse de la fiche : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
-            time.sleep(5)
+            time.sleep(10)
+
+            if "Accès refusé" in driver.page_source:
+                log("❌ Blocage détecté. Rafraîchissement...")
+                driver.refresh()
+                time.sleep(8)
 
             try:
-                # Activation de l'onglet 'Dernières courses'
                 tab = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='#dernieres-courses']")))
                 driver.execute_script("arguments[0].click();", tab)
-                time.sleep(3)
+                time.sleep(5)
                 
                 trainer_name = driver.find_element(By.TAG_NAME, "h1").text.replace("ENTRAINEUR", "").strip()
                 rows = driver.find_elements(By.CSS_SELECTOR, "#dernieres-courses table tbody tr")
@@ -256,7 +261,6 @@ def run_scraper_history():
         for race in races_to_process:
             rapport_valide = None
             
-            # Application de la règle métier : recherche PMU limitée au Top 3
             if race['rank'] in ['1', '2', '3']:
                 log(f"   🔍 Recherche rapport PMU pour {race['horse']}...")
                 
@@ -267,12 +271,10 @@ def run_scraper_history():
                     horse_name=race['horse']
                 )
 
-                # Filtrage strict des erreurs et valeurs par défaut
                 erreurs_exclues = ["Indisponible", "Non trouvé", "Erreur", "Pas de rapport"]
                 if not any(err in rapport_pmu for err in erreurs_exclues):
                     rapport_valide = rapport_pmu
 
-            # Construction séquentielle du message WhatsApp
             lignes_msg = [
                 f"🏆 *{race['horse']}* ({race['rank']}e)",
                 f"📅 {race['date']} | 📍 {race['hippo']}",
