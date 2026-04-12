@@ -140,52 +140,69 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
     return "Non trouvé"
 
 def fetch_dividendes(driver, base_url, date, r, c, num_p):
-    url = f"{base_url}/{date}/R{r}/C{c}/rapports"
-    try:
-        data = fetch_json_with_driver(driver, url, "Lecture Rapports")
-        if not data: return "Erreur rapports"
+    # Test séquentiel des endpoints PMU (définitif puis provisoire)
+    urls_a_tester = [
+        f"{base_url}/{date}/R{r}/C{c}/rapports-definitifs",
+        f"{base_url}/{date}/R{r}/C{c}/rapports"
+    ]
+    
+    data = None
+    for url in urls_a_tester:
+        data = fetch_json_with_driver(driver, url)
+        if data: 
+            break 
+            
+    if not data:
+        log(f"   [DEBUG-PMU] ❌ Impossible de lire les rapports (URLs invalides ou 404).")
+        return "Pas de rapport"
         
-        # Gestion multi-format du JSON du PMU
+    try:
         if isinstance(data, dict):
             rapports_list = data.get('rapports', []) or data.get('rapport', [])
         elif isinstance(data, list):
             rapports_list = data
         else:
-            return "Erreur rapports"
+            return "Pas de rapport"
             
-        sg, sp = 0, 0
+        sg, sp = 0.0, 0.0
+        
         for r_type in rapports_list:
             type_pari = r_type.get('typePari', '')
             
-            # Simple Gagnant (classique ou e-pari)
-            if 'SIMPLE_GAGNANT' in type_pari or 'SG' in type_pari:
+            # Simple Gagnant
+            if 'SIMPLE_GAGNANT' in type_pari or type_pari == 'SG':
                 for div in r_type.get('dividendes', []):
                     comb_raw = div.get('combinaison', div.get('chevaux', ''))
                     comb_str = str(comb_raw[0]) if isinstance(comb_raw, list) and comb_raw else str(comb_raw)
                     
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
                         val = div.get('dividende', div.get('dividendePourUnEuro', 0))
-                        # Si le PMU renvoie 250 (centimes) au lieu de 2.50 (euros)
-                        sg = val / 100.0 if isinstance(val, int) and val > 0 else val
+                        # Normalisation : si la valeur > 50, c'est en centimes, sinon c'est en euros
+                        sg = float(val) / 100.0 if float(val) > 50 else float(val)
                         
-            # Simple Placé (classique ou e-pari)
-            if 'SIMPLE_PLACE' in type_pari or 'SP' in type_pari:
+            # Simple Placé
+            if 'SIMPLE_PLACE' in type_pari or type_pari == 'SP':
                 for div in r_type.get('dividendes', []):
                     comb_raw = div.get('combinaison', div.get('chevaux', ''))
                     comb_str = str(comb_raw[0]) if isinstance(comb_raw, list) and comb_raw else str(comb_raw)
                     
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
                         val = div.get('dividende', div.get('dividendePourUnEuro', 0))
-                        sp = val / 100.0 if isinstance(val, int) and val > 0 else val
+                        sp = float(val) / 100.0 if float(val) > 50 else float(val)
         
-        if sg > 0 and sp > 0: return f"Gagnant: {sg}€ | Placé: {sp}€"
-        if sg > 0: return f"Gagnant: {sg}€"
-        if sp > 0: return f"Placé: {sp}€"
+        if sg > 0 and sp > 0: return f"Gagnant: {sg:.2f}€ | Placé: {sp:.2f}€"
+        if sg > 0: return f"Gagnant: {sg:.2f}€"
+        if sp > 0: return f"Placé: {sp:.2f}€"
+        
+        # Preuve analytique imprimée si aucun gain n'est identifié
+        gagnants = [str(d.get('combinaison', '')) for r in rapports_list if r.get('typePari') in ['SIMPLE_GAGNANT', 'SIMPLE_PLACE'] for d in r.get('dividendes', [])]
+        log(f"   [DEBUG-PMU] ❌ Le cheval (N°{num_p}) ne figure pas parmi les combinaisons payées par le PMU: {list(set(gagnants))}")
         return "Pas de rapport"
         
     except Exception as e:
+        log(f"   [DEBUG-PMU] 💥 Erreur d'analyse JSON dividendes : {e}")
         return "Erreur rapports"
-
+        
 # --- MAIN ---
 def run_scraper_history():
     chrome_version = get_chrome_main_version()
