@@ -77,7 +77,6 @@ def send_whatsapp(message):
 
 # --- PMU API HELPERS ---
 def fetch_json_with_driver(driver, url, context=""):
-    """Lit l'API PMU de manière robuste via regex sur le code source."""
     import urllib.parse
     import re
     
@@ -96,7 +95,6 @@ def fetch_json_with_driver(driver, url, context=""):
             page_source = driver.page_source
             
         try:
-            # Extraction infaillible du JSON depuis le code HTML brut
             match = re.search(r'(?s)<pre[^>]*>(.*?)</pre>', page_source)
             if match:
                 json_text = match.group(1).strip()
@@ -140,7 +138,6 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
                     
                     for p in partants.get('participants', []):
                         if horse_name.upper() in p.get('nom', '').upper():
-                            # La bonne clé pour l'API "Offline" est numPmu
                             num_p = p.get('numPmu') or p.get('numero') or p.get('numProno') or p.get('num')
                             log(f"   [DEBUG-PMU] 🐎 Cheval matché ! N°{num_p}")
                             return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, num_p, horse_name)
@@ -150,14 +147,12 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
         return "Erreur API"
 
 def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
-    # L'API Offline utilise exclusivement l'endpoint rapports-definitifs
     url = f"{base_url}/{date}/R{r}/C{c}/rapports-definitifs"
     
     data = fetch_json_with_driver(driver, url, f"Rapports R{r}C{c}")
     if not data: return "Pas de rapport"
     
     try:
-        # L'API renvoie un Array [] directement, et non un Dictionnaire {}
         if isinstance(data, list):
             paris_list = data
         elif isinstance(data, dict):
@@ -166,38 +161,51 @@ def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
             return "Pas de rapport"
             
         sg, sp = 0.0, 0.0
+        debug_info = []
         
         for pari in paris_list:
-            type_pari = pari.get('typePari', '')
+            type_pari = pari.get('typePari', pari.get('famillePari', ''))
+            
+            # Recherche ultra-large de la clé contenant l'argent
+            divs = pari.get('rapports', pari.get('dividendes', pari.get('gains', [])))
+            
+            # Sauvegarde pour le débogage si le cheval échoue
+            if 'GAGNANT' in type_pari or 'PLACE' in type_pari or 'SG' in type_pari or 'SP' in type_pari:
+                combs_payees = [str(d.get('combinaison', d.get('numero', ''))) for d in divs]
+                debug_info.append(f"{type_pari} : {combs_payees}")
             
             if type_pari in ['SIMPLE_GAGNANT', 'SG', 'E_SIMPLE_GAGNANT']:
-                for d in pari.get('dividendes', []):
+                for d in divs:
                     comb = d.get('combinaison', d.get('chevaux', d.get('numero', '')))
                     comb_str = str(comb[0]) if isinstance(comb, list) and comb else str(comb)
                     
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
-                        val = d.get('dividende', d.get('dividendePourUnEuro', 0))
+                        val = d.get('dividende', d.get('dividendePourUnEuro', d.get('montant', 0)))
                         sg = float(val) / 100.0 if float(val) > 50 else float(val)
                         
             if type_pari in ['SIMPLE_PLACE', 'SP', 'E_SIMPLE_PLACE']:
-                for d in pari.get('dividendes', []):
+                for d in divs:
                     comb = d.get('combinaison', d.get('chevaux', d.get('numero', '')))
                     comb_str = str(comb[0]) if isinstance(comb, list) and comb else str(comb)
                     
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
-                        val = d.get('dividende', d.get('dividendePourUnEuro', 0))
+                        val = d.get('dividende', d.get('dividendePourUnEuro', d.get('montant', 0)))
                         sp = float(val) / 100.0 if float(val) > 50 else float(val)
         
         if sg > 0 and sp > 0: return f"Gagnant: {sg:.2f}€ | Placé: {sp:.2f}€"
         if sg > 0: return f"Gagnant: {sg:.2f}€"
         if sp > 0: return f"Placé: {sp:.2f}€"
         
-        log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) n'a généré aucun gain SG/SP.")
+        # S'il n'y a pas de gain, on affiche explicitement ce que l'API a retourné
+        log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) pas de gain. Paris trouvés : {debug_info}")
+        if not debug_info:
+            log(f"   [DEBUG-PMU] 🔍 Structure RAPPORTS brute : {str(data)[:300]}")
+            
         return "Pas de rapport"
         
     except Exception as e:
         log(f"   [DEBUG-PMU] 💥 Erreur d'analyse JSON: {e}")
-        return "Erreur rapports"        
+        return "Erreur rapports"
 
 # --- MAIN ---
 def run_scraper_history():
