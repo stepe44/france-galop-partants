@@ -75,7 +75,7 @@ def fetch_json_with_driver(driver, url):
     """Utilise le navigateur camouflé pour lire l'API PMU et contourner le blocage."""
     try:
         driver.get(url)
-        time.sleep(1) # Laisse le temps au navigateur de rendre le JSON brut
+        time.sleep(1) 
         json_text = driver.find_element(By.TAG_NAME, "pre").text
         return json.loads(json_text)
     except Exception as e:
@@ -172,13 +172,29 @@ def run_scraper_history():
             log("🔑 Authentification requise...")
             try:
                 driver.execute_script("arguments[0].click();", login_elements[0])
-                email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-                email_el.send_keys(EMAIL_SENDER)
-                driver.find_element(By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']").click()
                 
-                pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
-                pwd_el.send_keys(FG_PASSWORD)
-                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']"))).click()
+                # --- RESTAURATION DE LA MÉTHODE DE SAISIE ORIGINALE ---
+                log("📧 Saisie identifiant...")
+                email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='username']")))
+                for char in EMAIL_SENDER: 
+                    email_el.send_keys(char)
+                    time.sleep(0.05)
+                
+                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_el)
+                btn_next = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']")))
+                driver.execute_script("arguments[0].click();", btn_next)
+                
+                time.sleep(6) # Délai vital pour Azure AD
+                
+                log("🔒 Saisie mot de passe...")
+                pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
+                for char in FG_PASSWORD:
+                    pwd_el.send_keys(char)
+                    time.sleep(0.05)
+                
+                driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_el)
+                btn_submit = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']")))
+                driver.execute_script("arguments[0].click();", btn_submit)
                 
                 wait.until(EC.presence_of_element_located((By.CLASS_NAME, "user-name")))
                 save_cookies(driver)
@@ -238,23 +254,37 @@ def run_scraper_history():
         # PHASE B : RECHERCHE DES RAPPORTS PARIEURS (PMU)
         # ==========================================
         for race in races_to_process:
-            log(f"   🔍 Recherche rapport PMU pour {race['horse']}...")
+            rapport_valide = None
             
-            # Appel de la nouvelle fonction utilisant l'API PMU via le driver
-            rapport_parieur = get_pmu_rapports(
-                driver=driver,
-                date_str=race['date'],
-                hippodrome_name=race['hippo'],
-                horse_name=race['horse']
-            )
+            # Application de la règle métier : recherche PMU limitée au Top 3
+            if race['rank'] in ['1', '2', '3']:
+                log(f"   🔍 Recherche rapport PMU pour {race['horse']}...")
+                
+                rapport_pmu = get_pmu_rapports(
+                    driver=driver,
+                    date_str=race['date'],
+                    hippodrome_name=race['hippo'],
+                    horse_name=race['horse']
+                )
 
-            # Construction du message
-            line = (f"🏆 *{race['horse']}* ({race['rank']}e)\n"
-                    f"📅 {race['date']} | 📍 {race['hippo']}\n"
-                    f"💰 Alloc: {race['prize']}€\n"
-                    f"📈 PMU: {rapport_parieur}\n"
-                    f"👤 Entr: {race['trainer']}")
-            final_report.append(line)
+                # Filtrage strict des erreurs et valeurs par défaut
+                erreurs_exclues = ["Indisponible", "Non trouvé", "Erreur", "Pas de rapport"]
+                if not any(err in rapport_pmu for err in erreurs_exclues):
+                    rapport_valide = rapport_pmu
+
+            # Construction séquentielle du message WhatsApp
+            lignes_msg = [
+                f"🏆 *{race['horse']}* ({race['rank']}e)",
+                f"📅 {race['date']} | 📍 {race['hippo']}",
+                f"💰 Alloc: {race['prize']}€"
+            ]
+            
+            if rapport_valide:
+                lignes_msg.append(f"📈 PMU: {rapport_valide}")
+                
+            lignes_msg.append(f"👤 Entr: {race['trainer']}")
+            
+            final_report.append("\n".join(lignes_msg))
 
         # ==========================================
         # PHASE C : ENVOI WHATSAPP
