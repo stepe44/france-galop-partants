@@ -105,30 +105,48 @@ def run_scraper():
         log("🌐 Accès France Galop...")
         driver.get(URL_HOME)
         
+        # 1. Tentative de chargement de session
         if load_cookies(driver):
             driver.refresh()
             time.sleep(5)
-        
+            
+        # 2. Gestion stricte du bandeau de cookies
         try:
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login']")))
-            log("🔑 Session expirée ou inexistante. Authentification...")
-            
-            login_btn = driver.find_element(By.CSS_SELECTOR, "a[href*='login'], .user-link")
-            driver.execute_script("arguments[0].click();", login_btn)
-
-            email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-            email_el.send_keys(EMAIL_SENDER)
-            driver.find_element(By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']").click()
-            
-            pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
-            pwd_el.send_keys(FG_PASSWORD)
-            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']"))).click()
-            
-            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "user-name")))
-            save_cookies(driver)
+            cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+            cookie_btn.click()
+            log("🍪 Cookies validés.")
+            time.sleep(2)
         except:
-            log("✅ Session déjà active.")
+            pass
+        
+        # 3. Vérification de session et Connexion
+        login_elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='login'], .user-link")
+        
+        if login_elements:
+            log("🔑 Authentification requise. Redirection...")
+            try:
+                driver.execute_script("arguments[0].click();", login_elements[0])
+                
+                email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
+                email_el.send_keys(EMAIL_SENDER)
+                driver.find_element(By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']").click()
+                
+                pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
+                pwd_el.send_keys(FG_PASSWORD)
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']"))).click()
+                
+                wait.until(EC.presence_of_element_located((By.CLASS_NAME, "user-name")))
+                save_cookies(driver)
+                log("✅ Connexion réussie.")
+            except Exception as e:
+                # Si erreur ici, sauvegarde de l'image et arrêt brutal pour ne pas fausser la suite
+                driver.save_screenshot("erreur_login_azure.png")
+                log(f"❌ Échec de la connexion. Capture sauvegardée. Erreur: {type(e).__name__}")
+                raise Exception("Impossible de passer l'écran de connexion.")
+        else:
+            log("✅ Session confirmée active via cookies.")
 
+        # 4. Extraction
         seen_runners = set()
         for trainer_url in URLS_ENTRAINEURS:
             driver.get(trainer_url)
@@ -179,7 +197,7 @@ def run_scraper():
             log("📝 Aucun partant détecté.")
 
     except Exception as e:
-        log(f"💥 ERREUR : {e}")
+        log(f"💥 ERREUR CRITIQUE : {e}")
     finally:
         driver.quit()
 
