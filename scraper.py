@@ -79,6 +79,7 @@ def send_whatsapp(message):
         log(f"❌ Erreur WhatsApp : {e}")
 
 def run_scraper():
+    chrome_version = get_chrome_main_version()
     options = uc.ChromeOptions()
     options.add_argument("--headless=new") # Obligatoire pour GitHub Actions
     options.add_argument("--no-sandbox")
