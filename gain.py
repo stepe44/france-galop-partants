@@ -71,64 +71,108 @@ def send_whatsapp(message):
         log(f"❌ Erreur WhatsApp : {e}")
 
 # --- PMU API HELPERS ---
-def fetch_json_with_driver(driver, url):
+    
+def fetch_json_with_driver(driver, url, context=""):
+    """Utilise le navigateur camouflé pour lire l'API PMU avec logs de débogage."""
     try:
+        log(f"   [DEBUG-PMU] {context} - GET {url}")
         driver.get(url)
-        time.sleep(1) 
-        json_text = driver.find_element(By.TAG_NAME, "pre").text
-        return json.loads(json_text)
+        time.sleep(1.5) # Délai légèrement augmenté pour garantir le rendu
+        
+        page_source = driver.page_source
+        if "Attention Required" in page_source or "Cloudflare" in page_source:
+            log(f"   [DEBUG-PMU] 🛑 Blocage Cloudflare/Anti-Bot détecté sur l'URL PMU.")
+            return None
+            
+        try:
+            json_text = driver.find_element(By.TAG_NAME, "pre").text
+            return json.loads(json_text)
+        except Exception as e:
+            log(f"   [DEBUG-PMU] ❌ Balise <pre> introuvable ou JSON invalide. Aperçu page : {page_source[:100].replace(chr(10), ' ')}...")
+            return None
     except Exception as e:
+        log(f"   [DEBUG-PMU] ❌ Erreur réseau critique : {str(e)[:50]}")
         return None
 
 def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
+    """Recherche les rapports PMU avec traçabilité complète."""
     formatted_date = date_str.replace('/', '')
     base_url = "https://online.pmu.fr/rest/client/7/programme"
     
     try:
-        programme = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}")
+        log(f"   [DEBUG-PMU] 🔍 Démarrage recherche PMU pour {horse_name} à {hippodrome_name} le {formatted_date}")
+        
+        # 1. Récupérer le programme du jour
+        programme = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}", "Programme du jour")
         if not programme or 'programme' not in programme: 
+            log("   [DEBUG-PMU] ⚠️ Échec : le JSON du programme global est vide ou mal formaté.")
             return "Indisponible"
         
-        for reunion in programme['programme'].get('reunions', []):
+        reunions = programme['programme'].get('reunions', [])
+        log(f"   [DEBUG-PMU] 📅 {len(reunions)} réunions trouvées à cette date.")
+        
+        # 2. Chercher la réunion
+        for reunion in reunions:
             if hippodrome_name.upper() in reunion['libelle'].upper() or reunion['libelle'].upper() in hippodrome_name.upper():
                 r_num = reunion['numOfficiel']
+                log(f"   [DEBUG-PMU] 🏟️ Hippodrome matché ! C'est la R{r_num} ({reunion['libelle']}).")
                 
+                # 3. Chercher le cheval dans les courses
                 for course in reunion.get('courses', []):
                     c_num = course['numOrdre']
                     
-                    partants = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants")
-                    if not partants: continue
+                    partants = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants", f"Partants R{r_num}C{c_num}")
+                    if not partants: 
+                        continue
                     
                     for p in partants.get('participants', []):
                         if horse_name.upper() in p.get('nom', '').upper():
-                            return fetch_dividendes(driver, formatted_date, r_num, c_num, p['numProno'])
-                            
+                            num_p = p['numProno']
+                            log(f"   [DEBUG-PMU] 🐎 Cheval matché ! {p.get('nom')} porte le N°{num_p}.")
+                            return fetch_dividendes(driver, formatted_date, r_num, c_num, num_p)
+                
+                log(f"   [DEBUG-PMU] ⚠️ Le cheval {horse_name} est introuvable dans les courses de la R{r_num}.")
+                return "Non trouvé (Cheval absent)"
+                
+        log(f"   [DEBUG-PMU] ⚠️ L'hippodrome '{hippodrome_name}' ne correspond à aucune réunion PMU du jour.")
+        return "Non trouvé (Hippodrome absent)"
+                        
     except Exception as e:
-        return f"Erreur API: {str(e)[:20]}"
-    
-    return "Non trouvé"
+        log(f"   [DEBUG-PMU] 💥 Erreur d'exécution API: {str(e)[:50]}")
+        return "Erreur API"
 
 def fetch_dividendes(driver, date, r, c, num_p):
+    """Extrait les dividendes avec logs détaillés."""
     url = f"https://online.pmu.fr/rest/client/7/programme/{date}/R{r}/C{c}/rapports"
     try:
-        data = fetch_json_with_driver(driver, url)
-        if not data: return "Erreur rapports"
+        data = fetch_json_with_driver(driver, url, "Lecture des rapports")
+        if not data: 
+            log("   [DEBUG-PMU] ⚠️ Échec de la lecture du JSON des rapports finaux.")
+            return "Erreur rapports"
         
         sg, sp = 0, 0
-        for r_type in data.get('rapports', []):
+        rapports_list = data.get('rapports', [])
+        log(f"   [DEBUG-PMU] 📊 {len(rapports_list)} types de paris disponibles pour cette course.")
+        
+        for r_type in rapports_list:
             if r_type['typePari'] == 'SIMPLE_GAGNANT':
                 for div in r_type.get('dividendes', []):
                     if str(num_p) in div.get('combinaison', ''): 
                         sg = div['dividende'] / 100
+                        log(f"   [DEBUG-PMU] 💰 SG trouvé : {sg}€")
             if r_type['typePari'] == 'SIMPLE_PLACE':
                 for div in r_type.get('dividendes', []):
                     if str(num_p) in div.get('combinaison', ''): 
                         sp = div['dividende'] / 100
+                        log(f"   [DEBUG-PMU] 💰 SP trouvé : {sp}€")
         
         if sg > 0: return f"Gagnant: {sg}€ | Placé: {sp}€"
         if sp > 0: return f"Placé: {sp}€"
+        
+        log(f"   [DEBUG-PMU] ⚠️ Le N°{num_p} n'est présent dans aucun rapport SG/SP (pas dans les gains PMU).")
         return "Pas de rapport"
-    except:
+    except Exception as e:
+        log(f"   [DEBUG-PMU] 💥 Erreur d'extraction des dividendes: {str(e)[:50]}")
         return "Erreur rapports"
 
 # --- MAIN ---
