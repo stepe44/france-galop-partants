@@ -111,7 +111,6 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
         if not programme or 'programme' not in programme: 
             return "Indisponible"
         
-        # Tolérance maximale sur le nom de l'hippodrome (6 premières lettres sans espaces/tirets)
         fg_hippo_clean = re.sub(r'[^A-Z]', '', hippodrome_name.upper())
         fg_hippo_short = fg_hippo_clean[:6]
         
@@ -120,7 +119,6 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
             r_name = hippo_data.get('libelleCourt', '') + hippo_data.get('libelleLong', '') + reunion.get('libelle', '')
             r_name_clean = re.sub(r'[^A-Z]', '', r_name.upper())
             
-            # Si les 6 premières lettres de l'hippodrome correspondent (ex: SENONN dans SENONNES POUANCE)
             if fg_hippo_short and fg_hippo_short in r_name_clean:
                 r_num = reunion.get('numOfficiel')
                 
@@ -132,75 +130,66 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
                     
                     for p in partants.get('participants', []):
                         if horse_name.upper() in p.get('nom', '').upper():
-                            return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, p.get('numProno'))
+                            # FIX 1 : Récupération large du numéro (gère les différences entre les API PMU)
+                            num_p = p.get('numero') or p.get('numProno') or p.get('num')
+                            return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, num_p, horse_name)
                             
     except Exception as e:
-        return "Erreur API"
+        pass
     
     return "Non trouvé"
 
-def fetch_dividendes(driver, base_url, date, r, c, num_p):
-    # Test séquentiel des endpoints PMU (définitif puis provisoire)
-    urls_a_tester = [
-        f"{base_url}/{date}/R{r}/C{c}/rapports-definitifs",
-        f"{base_url}/{date}/R{r}/C{c}/rapports"
-    ]
-    
-    data = None
-    for url in urls_a_tester:
-        data = fetch_json_with_driver(driver, url)
-        if data: 
-            break 
-            
-    if not data:
-        log(f"   [DEBUG-PMU] ❌ Impossible de lire les rapports (URLs invalides ou 404).")
-        return "Pas de rapport"
-        
+def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
+    url = f"{base_url}/{date}/R{r}/C{c}/rapports"
     try:
+        data = fetch_json_with_driver(driver, url, "Lecture Rapports")
+        if not data: return "Pas de rapport"
+        
         if isinstance(data, dict):
-            rapports_list = data.get('rapports', []) or data.get('rapport', [])
+            paris_list = data.get('rapports', data.get('rapport', []))
         elif isinstance(data, list):
-            rapports_list = data
+            paris_list = data
         else:
             return "Pas de rapport"
             
         sg, sp = 0.0, 0.0
+        gagnants_debug = []
         
-        for r_type in rapports_list:
-            type_pari = r_type.get('typePari', '')
+        for pari in paris_list:
+            type_pari = pari.get('typePari', '')
             
-            # Simple Gagnant
-            if 'SIMPLE_GAGNANT' in type_pari or type_pari == 'SG':
-                for div in r_type.get('dividendes', []):
-                    comb_raw = div.get('combinaison', div.get('chevaux', ''))
-                    comb_str = str(comb_raw[0]) if isinstance(comb_raw, list) and comb_raw else str(comb_raw)
+            # FIX 2 : Recherche large du nom du tableau des gains (dividendes, rapports ou gains)
+            divs = pari.get('rapports', pari.get('dividendes', pari.get('gains', [])))
+            
+            if 'GAGNANT' in type_pari or type_pari == 'SG':
+                for d in divs:
+                    comb = d.get('combinaison', d.get('chevaux', d.get('numero', '')))
+                    comb_str = str(comb[0]) if isinstance(comb, list) and comb else str(comb)
+                    gagnants_debug.append(f"G({comb_str})")
                     
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
-                        val = div.get('dividende', div.get('dividendePourUnEuro', 0))
-                        # Normalisation : si la valeur > 50, c'est en centimes, sinon c'est en euros
+                        val = d.get('dividende', d.get('dividendePourUnEuro', d.get('montant', 0)))
                         sg = float(val) / 100.0 if float(val) > 50 else float(val)
                         
-            # Simple Placé
-            if 'SIMPLE_PLACE' in type_pari or type_pari == 'SP':
-                for div in r_type.get('dividendes', []):
-                    comb_raw = div.get('combinaison', div.get('chevaux', ''))
-                    comb_str = str(comb_raw[0]) if isinstance(comb_raw, list) and comb_raw else str(comb_raw)
+            if 'PLACE' in type_pari or type_pari == 'SP':
+                for d in divs:
+                    comb = d.get('combinaison', d.get('chevaux', d.get('numero', '')))
+                    comb_str = str(comb[0]) if isinstance(comb, list) and comb else str(comb)
+                    gagnants_debug.append(f"P({comb_str})")
                     
                     if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
-                        val = div.get('dividende', div.get('dividendePourUnEuro', 0))
+                        val = d.get('dividende', d.get('dividendePourUnEuro', d.get('montant', 0)))
                         sp = float(val) / 100.0 if float(val) > 50 else float(val)
         
         if sg > 0 and sp > 0: return f"Gagnant: {sg:.2f}€ | Placé: {sp:.2f}€"
         if sg > 0: return f"Gagnant: {sg:.2f}€"
         if sp > 0: return f"Placé: {sp:.2f}€"
         
-        # Preuve analytique imprimée si aucun gain n'est identifié
-        gagnants = [str(d.get('combinaison', '')) for r in rapports_list if r.get('typePari') in ['SIMPLE_GAGNANT', 'SIMPLE_PLACE'] for d in r.get('dividendes', [])]
-        log(f"   [DEBUG-PMU] ❌ Le cheval (N°{num_p}) ne figure pas parmi les combinaisons payées par le PMU: {list(set(gagnants))}")
+        log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) introuvable. Payés par le PMU: {list(set(gagnants_debug))}")
         return "Pas de rapport"
         
     except Exception as e:
-        log(f"   [DEBUG-PMU] 💥 Erreur d'analyse JSON dividendes : {e}")
+        log(f"   [DEBUG-PMU] 💥 Erreur d'analyse JSON: {e}")
         return "Erreur rapports"
         
 # --- MAIN ---
