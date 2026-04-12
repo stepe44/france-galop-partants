@@ -130,8 +130,10 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
                     
                     for p in partants.get('participants', []):
                         if horse_name.upper() in p.get('nom', '').upper():
-                            # FIX 1 : Récupération large du numéro (gère les différences entre les API PMU)
-                            num_p = p.get('numero') or p.get('numProno') or p.get('num')
+                            # Tentative de récupération large. Si échec, on imprime les clés de l'API pour déboguer
+                            num_p = p.get('numProno') or p.get('numero') or p.get('numPmu') or p.get('num')
+                            if num_p is None:
+                                log(f"   [DEBUG-PMU] 🔍 Structure Partant brute : {list(p.keys())}")
                             return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, num_p, horse_name)
                             
     except Exception as e:
@@ -140,11 +142,21 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
     return "Non trouvé"
 
 def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
-    url = f"{base_url}/{date}/R{r}/C{c}/rapports"
-    try:
+    # Test séquentiel : Les rapports confirmés sont parfois sous un autre lien
+    urls_a_tester = [
+        f"{base_url}/{date}/R{r}/C{c}/rapports-definitifs",
+        f"{base_url}/{date}/R{r}/C{c}/rapports"
+    ]
+    
+    data = None
+    for url in urls_a_tester:
         data = fetch_json_with_driver(driver, url, "Lecture Rapports")
-        if not data: return "Pas de rapport"
-        
+        if data: 
+            break
+            
+    if not data: return "Pas de rapport"
+    
+    try:
         if isinstance(data, dict):
             paris_list = data.get('rapports', data.get('rapport', []))
         elif isinstance(data, list):
@@ -158,7 +170,6 @@ def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
         for pari in paris_list:
             type_pari = pari.get('typePari', '')
             
-            # FIX 2 : Recherche large du nom du tableau des gains (dividendes, rapports ou gains)
             divs = pari.get('rapports', pari.get('dividendes', pari.get('gains', [])))
             
             if 'GAGNANT' in type_pari or type_pari == 'SG':
@@ -185,7 +196,12 @@ def fetch_dividendes(driver, base_url, date, r, c, num_p, horse_name="Cheval"):
         if sg > 0: return f"Gagnant: {sg:.2f}€"
         if sp > 0: return f"Placé: {sp:.2f}€"
         
-        log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) introuvable. Payés par le PMU: {list(set(gagnants_debug))}")
+        if not gagnants_debug:
+            # Si aucune liste de gagnant n'est trouvée, c'est que la clé "dividendes" est fausse
+            log(f"   [DEBUG-PMU] 🔍 Structure Rapports brute : {str(data)[:300]}")
+        else:
+            log(f"   [DEBUG-PMU] ❌ {horse_name} (N°{num_p}) introuvable. Payés par le PMU: {list(set(gagnants_debug))}")
+            
         return "Pas de rapport"
         
     except Exception as e:
