@@ -84,8 +84,8 @@ def run_scraper():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    
-    driver = uc.Chrome(options=options)
+   
+    driver = uc.Chrome(options=options, version_main=chrome_version)
     wait = WebDriverWait(driver, 25)
     today = datetime.now().strftime("%d/%m/%Y")
     today_results = []
