@@ -22,6 +22,64 @@ FG_PASSWORD = os.getenv("FG_PASSWORD")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 GREEN_API_URL = os.getenv("GREEN_API_URL")
 
+# --- NOUVELLE FONCTION : RÉCUPÉRATION RAPPORTS PMU ---
+def get_pmu_rapports(date_str, hippodrome_name, horse_name):
+    """
+    date_str format: 'DD/MM/YYYY'
+    """
+    formatted_date = date_str.replace('/', '')
+    base_url = "https://online.pmu.fr/rest/client/7/programme"
+    
+    try:
+        # 1. Récupérer le programme du jour
+        resp = requests.get(f"{base_url}/{formatted_date}", timeout=10)
+        if resp.status_code != 200: return "Indisponible"
+        
+        programme = resp.json()
+        
+        # 2. Chercher la réunion et la course
+        for reunion in programme['programme']['reunions']:
+            # Match partiel sur l'hippodrome (ex: "COMPIEGNE" dans "COMPIEGNE")
+            if hippodrome_name.upper() in reunion['libelle'].upper() or reunion['libelle'].upper() in hippodrome_name.upper():
+                r_num = reunion['numOfficiel']
+                
+                for course in reunion['courses']:
+                    c_num = course['numOrdre']
+                    
+                    # Vérifier les participants de cette course
+                    part_resp = requests.get(f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants")
+                    partants = part_resp.json()
+                    
+                    for p in partants.get('participants', []):
+                        if horse_name.upper() in p['nom'].upper():
+                            # Cheval trouvé ! On cherche ses rapports
+                            return fetch_dividendes(formatted_date, r_num, c_num, p['numProno'])
+    except Exception as e:
+        return f"Erreur API: {str(e)[:20]}"
+    
+    return "Non trouvé"
+
+def fetch_dividendes(date, r, c, num_p):
+    url = f"https://online.pmu.fr/rest/client/7/programme/{date}/R{r}/C{c}/rapports"
+    try:
+        data = requests.get(url).json()
+        sg, sp = 0, 0
+        for r_type in data.get('rapports', []):
+            if r_type['typePari'] == 'SIMPLE_GAGNANT':
+                for div in r_type['dividendes']:
+                    if str(num_p) in div['combinaison']: sg = div['dividende'] / 100
+            if r_type['typePari'] == 'SIMPLE_PLACE':
+                for div in r_type['dividendes']:
+                    if str(num_p) in div['combinaison']: sp = div['dividende'] / 100
+        
+        if sg > 0: return f"Gagnant: {sg}€ | Placé: {sp}€"
+        if sp > 0: return f"Placé: {sp}€"
+        return "Pas de rapport"
+    except:
+        return "Erreur rapports"
+
+# --- RESTE DU SCRIPT ORIGINAL (MODIFIÉ) ---
+
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
@@ -49,7 +107,6 @@ def send_whatsapp_notification(content):
 
 def run_scraper_history():
     chrome_options = Options()
-    # Configuration identique à scraper.py pour éviter le blocage
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
@@ -71,54 +128,43 @@ def run_scraper_history():
         driver.get(URL_HOME)
         time.sleep(5)
         
-        # 1. Gestion des Cookies
+        # Gestion des Cookies
         try:
             cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
             driver.execute_script("arguments[0].click();", cookie_btn)
             log("🍪 Cookies validés.")
         except: pass
 
-        # 2. Authentification Azure AD (Méthode de scraper.py)
-        log("🔑 Accès au portail de connexion...")
+        # Authentification
+        log("🔑 Authentification...")
         login_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login'], .user-link")))
         driver.execute_script("arguments[0].click();", login_btn)
 
-        log("📧 Saisie identifiant...")
         email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='username']")))
         for char in EMAIL_SENDER: email_el.send_keys(char)
         
-        driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", email_el)
         btn_next = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']")))
         driver.execute_script("arguments[0].click();", btn_next)
-        
         time.sleep(6)
 
-        log("🔒 Saisie mot de passe...")
         pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
         for char in FG_PASSWORD:
             pwd_el.send_keys(char)
             time.sleep(0.05)
         
-        driver.execute_script("arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));", pwd_el)
         btn_submit = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']")))
         driver.execute_script("arguments[0].click();", btn_submit)
         
-        log("⏳ Stabilisation de la session (20s)...")
+        log("⏳ Stabilisation (20s)...")
         time.sleep(20)
 
-        # 3. Analyse des Gains
+        # Analyse des Gains
         for trainer_url in URLS_ENTRAINEURS:
-            log(f"🚀 Analyse de la fiche : {trainer_url.split('/')[-1][:15]}...")
+            log(f"🚀 Analyse : {trainer_url.split('/')[-1][:15]}...")
             driver.get(trainer_url)
             time.sleep(10)
 
-            if "Accès refusé" in driver.page_source:
-                log("❌ Blocage détecté. Rafraîchissement...")
-                driver.refresh()
-                time.sleep(8)
-
             try:
-                # Activation de l'onglet 'Dernières courses'
                 tab = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='#dernieres-courses']")))
                 driver.execute_script("arguments[0].click();", tab)
                 time.sleep(5)
@@ -138,19 +184,28 @@ def run_scraper_history():
 
                     race_dt = parse_date(raw_date)
                     if race_dt and start_date <= race_dt <= today:
-                        # Filtrage Place (1er à 4e)
                         match_place = re.search(r'^([1-4])$', place)
                         if match_place:
                             rank = match_place.group(1)
-                            line = f"🏆 *{horse_name}* ({rank}e)\n📅 {raw_date} | 📍 {hippodrome}\n💰 Gain : {prize}€\n👤 Entr: {trainer_name}"
+                            
+                            # --- APPEL À L'API PMU POUR LE RAPPORT PARIEUR ---
+                            log(f"🔍 Recherche rapport PMU pour {horse_name}...")
+                            betting_rapport = get_pmu_rapports(raw_date, hippodrome, horse_name)
+                            
+                            line = (f"🏆 *{horse_name}* ({rank}e)\n"
+                                    f"📅 {raw_date} | 📍 {hippodrome}\n"
+                                    f"💰 Alloc. : {prize}€\n"
+                                    f"📊 Rapports : *{betting_rapport}*\n"
+                                    f"👤 Entr: {trainer_name}")
+                            
                             final_report.append(line)
-                            log(f"✅ Performance retenue : {horse_name}")
+                            log(f"✅ Performance retenue : {horse_name} ({betting_rapport})")
             except Exception as e:
-                log(f"⚠️ Erreur sur cet entraîneur : {str(e)[:50]}")
+                log(f"⚠️ Erreur entraîneur : {str(e)[:50]}")
 
-        # 4. Envoi Final
+        # Envoi Final
         if final_report:
-            header = f"💰 *TOP PERFORMANCES (7 derniers jours)*\n\n"
+            header = f"💰 *TOP PERFORMANCES & RAPPORTS*\n\n"
             full_message = header + "\n\n---\n\n".join(final_report)
             send_whatsapp_notification(full_message)
         else:
