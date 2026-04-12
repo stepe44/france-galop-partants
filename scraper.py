@@ -1,16 +1,13 @@
 import os
 import re
+import json
 import time
 import requests
-from datetime import datetime, timedelta
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+from datetime import datetime
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
-# ... (imports Selenium standards)
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
 # --- CONFIGURATION ---
 URL_HOME = "https://www.france-galop.com/fr"
@@ -19,13 +16,28 @@ URLS_ENTRAINEURS = [
     "https://www.france-galop.com/fr/entraineur/U0VNb0JtQlZ1bUphYndFTnJjSzg4dz09#partants"
 ]
 
+COOKIE_FILE = "cookies.json"
 FG_PASSWORD = os.getenv("FG_PASSWORD")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 GREEN_API_URL = os.getenv("GREEN_API_URL")
 
-# --- OUTILS DE TRAITEMENT (Issus de scraper 2.py) ---
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+
+def save_cookies(driver):
+    with open(COOKIE_FILE, "w") as f:
+        json.dump(driver.get_cookies(), f)
+    log("💾 Cookies sauvegardés.")
+
+def load_cookies(driver):
+    if os.path.exists(COOKIE_FILE):
+        with open(COOKIE_FILE, "r") as f:
+            cookies = json.load(f)
+            for cookie in cookies:
+                driver.add_cookie(cookie)
+        log("🍪 Cookies chargés depuis le cache.")
+        return True
+    return False
 
 def translate_performance(musique):
     if not musique or musique == "N/A": return "Aucune performance récente"
@@ -33,7 +45,7 @@ def translate_performance(musique):
     mapping_inc = {'A': 'Arrêté', 'T': 'Tombé', 'D': 'Disqualifié', 'R': 'Rétrogradé'}
     parts = re.split(r'(\(\d+\))', musique)
     decoded_parts = []
-    current_year = "2026"
+    current_year = str(datetime.now().year)
     for part in parts:
         if re.match(r'\(\d+\)', part):
             current_year = "20" + part.strip('()')
@@ -53,11 +65,7 @@ def clean_text(text):
 
 def get_pure_horse_name(full_name):
     pure_name = re.split(r'\s[A-Z]\.', full_name)[0] 
-    pure_name = re.split(r'\s\d\sa\.', pure_name)[0] 
     return pure_name.strip()
-
-def normalize_for_xpath(text):
-    return re.sub(r'[^a-z0-9]', '', text.lower())
 
 def send_whatsapp(message):
     if not GREEN_API_URL:
@@ -71,143 +79,107 @@ def send_whatsapp(message):
         log(f"❌ Erreur WhatsApp : {e}")
 
 def run_scraper():
-    chrome_options = Options()
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
+    options = uc.ChromeOptions()
+    options.add_argument("--headless=new") # Obligatoire pour GitHub Actions
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    
-    wait = WebDriverWait(driver, 35)
+    driver = uc.Chrome(options=options)
+    wait = WebDriverWait(driver, 25)
     today = datetime.now().strftime("%d/%m/%Y")
     today_results = []
-    seen_runners = set()
 
     try:
-        log("🌐 Initialisation France Galop...")
+        log("🌐 Accès France Galop...")
         driver.get(URL_HOME)
-        time.sleep(5)
         
-        # 1. Cookies
+        # Tentative de chargement de session
+        if load_cookies(driver):
+            driver.refresh()
+            time.sleep(5)
+        
+        # Vérification si connexion nécessaire
         try:
-            wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
-            log("🍪 Cookies validés.")
-        except: pass
-
-        # 2. Connexion (Méthode scraper tomorrow.py)
-        log("🔑 Authentification Azure AD...")
-        login_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login'], .user-link")))
-        driver.execute_script("arguments[0].click();", login_btn)
-
-        email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='username']")))
-        for char in EMAIL_SENDER: email_el.send_keys(char)
-        
-        btn_next = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']")))
-        driver.execute_script("arguments[0].click();", btn_next)
-        
-        time.sleep(6)
-        pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password'], #password")))
-        for char in FG_PASSWORD:
-            pwd_el.send_keys(char)
-            time.sleep(0.05)
-        
-        btn_submit = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']")))
-        driver.execute_script("arguments[0].click();", btn_submit)
-        
-        log("⏳ Stabilisation session (20s)...")
-        time.sleep(20)
-
-        # 3. Extraction
-        for trainer_url in URLS_ENTRAINEURS:
-            log(f"🚀 Analyse : {trainer_url.split('/')[-1][:15]}...")
-            driver.get(trainer_url)
-            time.sleep(8)
+            # Si le bouton de connexion est toujours présent, on se connecte
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login']")))
+            log("🔑 Session expirée ou inexistante. Authentification...")
             
-            # Switch Onglet Partants
-            try:
-                tab = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='#partants']")))
-                driver.execute_script("arguments[0].click();", tab)
-                time.sleep(5)
-                
-                trainer_name = clean_text(driver.find_element(By.TAG_NAME, "h1").text).replace("ENTRAINEUR", "").strip()
-                rows = driver.find_elements(By.CSS_SELECTOR, "#partants_entraineur tbody tr")
-                
-                runners_to_process = []
-                for row in rows:
-                    txt = row.text
-                    if today in txt: # Filtrage strict sur AUJOURD'HUI
-                        cells = row.find_elements(By.TAG_NAME, "td")
-                        full_name = clean_text(cells[0].text)
-                        url_course = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
-                        
-                        if f"{full_name}_{url_course}" not in seen_runners:
-                            seen_runners.add(f"{full_name}_{url_course}")
-                            runners_to_process.append({
-                                'full_name': full_name,
-                                'pure_name': get_pure_horse_name(full_name),
-                                'url': url_course,
-                                'trainer': trainer_name,
-                                'label': clean_text(cells[4].text)
-                            })
+            # (Le processus de login reste identique mais sans les time.sleep inutiles)
+            login_btn = driver.find_element(By.CSS_SELECTOR, "a[href*='login'], .user-link")
+            driver.execute_script("arguments[0].click();", login_btn)
 
-                # Détails profonds pour chaque partant du jour
-                for r in runners_to_process:
-                    log(f"   🐎 Détails : {r['pure_name']}")
-                    driver.get(r['url'])
-                    time.sleep(5)
+            email_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
+            email_el.send_keys(EMAIL_SENDER)
+            driver.find_element(By.XPATH, "//button[contains(., 'Next')] | //button[@id='next']").click()
+            
+            pwd_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']")))
+            pwd_el.send_keys(FG_PASSWORD)
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']"))).click()
+            
+            # Attendre la redirection finale avant de sauvegarder
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "user-name")))
+            save_cookies(driver)
+        except:
+            log("✅ Session déjà active.")
+
+        # Extraction (Logique simplifiée pour la performance)
+        seen_runners = set()
+        for trainer_url in URLS_ENTRAINEURS:
+            driver.get(trainer_url)
+            # Attendre spécifiquement le tableau des partants
+            rows = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "#partants_entraineur tbody tr")))
+            
+            trainer_name = clean_text(driver.find_element(By.TAG_NAME, "h1").text).replace("ENTRAINEUR", "").strip()
+            
+            runners_to_process = []
+            for row in rows:
+                if today in row.text:
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    full_name = clean_text(cells[0].text)
+                    url_course = row.find_element(By.CSS_SELECTOR, "a[href*='/course/']").get_attribute("href")
                     
-                    try:
-                        # Hippo, Heure, N° Course
-                        details = driver.find_elements(By.CSS_SELECTOR, ".course-detail p")
-                        heure, hippo, n_course = "00:00", "Inconnu", "?"
-                        for p in details:
-                            p_txt = p.text.strip()
-                            if "2026" in p_txt:
-                                m_h = re.search(r'(\d{1,2}h\d{2})', p_txt)
-                                if m_h: heure = m_h.group(1)
-                                m_n = re.search(r'(\d+)(?:er|ère|ème|eme)', p_txt, re.IGNORECASE)
-                                if m_n: n_course = m_n.group(1)
-                                if "," in p_txt: hippo = clean_text(p_txt.split(",")[-1])
-                                break
-                        
-                        # Musique et Numéro
-                        search_key = normalize_for_xpath(r['pure_name'])
-                        xpath_row = f"//tr[contains(translate(translate(., \"' \", ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{search_key}')]"
-                        row_cheval = wait.until(EC.presence_of_element_located((By.XPATH, xpath_row)))
-                        cells_c = row_cheval.find_elements(By.TAG_NAME, "td")
-                        
-                        num_cheval = "".join(filter(str.isdigit, cells_c[0].text))
-                        raw_perf = clean_text(cells_c[11].text) if len(cells_c) > 11 else "N/A"
-                        
-                        msg = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n"
-                               f"📍 {hippo} - C{n_course} à {heure}\n"
-                               f"📊 *Musique :* {translate_performance(raw_perf)}\n"
-                               f"📝 {r['label']}\n"
-                               f"👤 Entr: {r['trainer']}")
-                        
-                        today_results.append(msg)
-                    except Exception as e:
-                        log(f"      ⚠️ Erreur détails {r['pure_name']} : {str(e)[:50]}")
+                    if f"{full_name}_{url_course}" not in seen_runners:
+                        seen_runners.add(f"{full_name}_{url_course}")
+                        runners_to_process.append({
+                            'pure_name': get_pure_horse_name(full_name),
+                            'url': url_course,
+                            'trainer': trainer_name,
+                            'label': clean_text(cells[4].text)
+                        })
 
-            except Exception as e:
-                log(f"⚠️ Erreur entraîneur : {str(e)[:50]}")
+            for r in runners_to_process:
+                driver.get(r['url'])
+                try:
+                    # Extraction directe via sélecteurs plus précis
+                    details_txt = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "course-detail"))).text
+                    heure = re.search(r'(\d{1,2}h\d{2})', details_txt).group(1) if re.search(r'(\d{1,2}h\d{2})', details_txt) else "00:00"
+                    
+                    # On cherche la ligne du cheval par son nom en minuscules
+                    cheval_row = driver.find_element(By.XPATH, f"//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['pure_name'].lower()}')]")
+                    cells_c = cheval_row.find_elements(By.TAG_NAME, "td")
+                    
+                    num_cheval = "".join(filter(str.isdigit, cells_c[0].text))
+                    raw_perf = cells_c[11].text if len(cells_c) > 11 else "N/A"
+                    
+                    msg = (f"🏇 *{r['pure_name']}* (N°{num_cheval})\n"
+                           f"📍 C{heure}\n"
+                           f"📊 *Perfs :* {translate_performance(raw_perf)}\n"
+                           f"📝 {r['label']}\n"
+                           f"👤 Entr: {r['trainer']}")
+                    today_results.append(msg)
+                except Exception as e:
+                    log(f"⚠️ Erreur détails {r['pure_name']}")
 
-        # 4. Rapport
         if today_results:
-            final_msg = f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results)
-            send_whatsapp(final_msg)
+            send_whatsapp(f"✅ *PARTANTS DU JOUR ({today})*\n\n" + "\n\n---\n\n".join(today_results))
         else:
-            log("📝 Aucun partant détecté pour aujourd'hui.")
+            log("📝 Aucun partant détecté.")
 
     except Exception as e:
-        log(f"💥 ERREUR CRITIQUE : {e}")
+        log(f"💥 ERREUR : {e}")
     finally:
         driver.quit()
-        log("🏁 Fin.")
 
 if __name__ == "__main__":
     run_scraper()
