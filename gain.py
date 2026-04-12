@@ -44,7 +44,12 @@ def load_cookies(driver):
         with open(COOKIE_FILE, "r") as f:
             cookies = json.load(f)
             for cookie in cookies:
-                driver.add_cookie(cookie)
+                try:
+                    # Tente d'ajouter le cookie
+                    driver.add_cookie(cookie)
+                except Exception:
+                    # Ignore silencieusement les cookies appartenant à d'autres domaines (Azure AD)
+                    pass
         log("🍪 Cookies chargés depuis le cache.")
         return True
     return False
