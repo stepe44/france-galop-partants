@@ -75,9 +75,8 @@ def send_whatsapp(message):
     except Exception as e:
         log(f"❌ Erreur WhatsApp : {e}")
 
-# --- PMU API HELPERS ---
+# --- PMU API HELPERS --- 
 
-# --- PMU API HELPERS ---
 def fetch_json_with_driver(driver, url, context=""):
     """Lit l'API PMU avec proxy de secours pour contourner le Geo-DNS."""
     import urllib.parse
@@ -109,8 +108,6 @@ def fetch_json_with_driver(driver, url, context=""):
 
 def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
     formatted_date = date_str.replace('/', '')
-    
-    # URL MODIFIÉE : API Terminale/Offline (non filtrée par les DNS Geo-bloquants)
     base_url = "https://offline.turfinfo.api.pmu.fr/rest/client/7/programme"
     
     try:
@@ -121,22 +118,27 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
             return "Indisponible"
         
         for reunion in programme['programme'].get('reunions', []):
-            if hippodrome_name.upper() in reunion['libelle'].upper() or reunion['libelle'].upper() in hippodrome_name.upper():
-                r_num = reunion['numOfficiel']
+            # LECTURE SÉCURISÉE : L'API Offline range l'hippodrome dans un sous-objet
+            hippo_data = reunion.get('hippodrome', {})
+            r_name = hippo_data.get('libelleCourt') or hippo_data.get('libelleLong') or reunion.get('libelle') or ""
+            
+            if r_name and (hippodrome_name.upper() in r_name.upper() or r_name.upper() in hippodrome_name.upper()):
+                r_num = reunion.get('numOfficiel')
                 
                 for course in reunion.get('courses', []):
-                    c_num = course['numOrdre']
+                    c_num = course.get('numOrdre')
                     
                     partants = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants", f"Lecture Partants R{r_num}C{c_num}")
                     if not partants: continue
                     
                     for p in partants.get('participants', []):
-                        if horse_name.upper() in p.get('nom', '').upper():
-                            return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, p['numProno'])
+                        nom_cheval = p.get('nom', '')
+                        if horse_name.upper() in nom_cheval.upper():
+                            return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, p.get('numProno'))
                             
     except Exception as e:
         log(f"   [DEBUG-PMU] 💥 Erreur d'exécution API: {str(e)[:50]}")
-        return f"Erreur API"
+        return "Erreur API"
     
     return "Non trouvé"
 
@@ -148,19 +150,20 @@ def fetch_dividendes(driver, base_url, date, r, c, num_p):
         
         sg, sp = 0, 0
         for r_type in data.get('rapports', []):
-            if r_type['typePari'] == 'SIMPLE_GAGNANT':
+            if r_type.get('typePari') == 'SIMPLE_GAGNANT':
                 for div in r_type.get('dividendes', []):
                     if str(num_p) in div.get('combinaison', ''): 
-                        sg = div['dividende'] / 100
-            if r_type['typePari'] == 'SIMPLE_PLACE':
+                        sg = div.get('dividende', 0) / 100
+            if r_type.get('typePari') == 'SIMPLE_PLACE':
                 for div in r_type.get('dividendes', []):
                     if str(num_p) in div.get('combinaison', ''): 
-                        sp = div['dividende'] / 100
+                        sp = div.get('dividende', 0) / 100
         
         if sg > 0: return f"Gagnant: {sg}€ | Placé: {sp}€"
         if sp > 0: return f"Placé: {sp}€"
         return "Pas de rapport"
-    except:
+    except Exception as e:
+        log(f"   [DEBUG-PMU] 💥 Erreur dividendes: {str(e)[:50]}")
         return "Erreur rapports"
 
 # --- MAIN ---
