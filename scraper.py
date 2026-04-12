@@ -3,6 +3,7 @@ import re
 import json
 import time
 import requests
+import subprocess
 from datetime import datetime
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -23,6 +24,15 @@ GREEN_API_URL = os.getenv("GREEN_API_URL")
 
 def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+
+def get_chrome_main_version():
+    try:
+        output = subprocess.check_output(['google-chrome', '--version']).decode('utf-8')
+        version_str = output.strip().split()[2]
+        return int(version_str.split('.')[0])
+    except Exception as e:
+        log(f"⚠️ Impossible de déterminer la version de Chrome : {e}")
+        return None
 
 def save_cookies(driver):
     with open(COOKIE_FILE, "w") as f:
@@ -81,7 +91,7 @@ def send_whatsapp(message):
 def run_scraper():
     chrome_version = get_chrome_main_version()
     options = uc.ChromeOptions()
-    options.add_argument("--headless=new") # Obligatoire pour GitHub Actions
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -95,18 +105,14 @@ def run_scraper():
         log("🌐 Accès France Galop...")
         driver.get(URL_HOME)
         
-        # Tentative de chargement de session
         if load_cookies(driver):
             driver.refresh()
             time.sleep(5)
         
-        # Vérification si connexion nécessaire
         try:
-            # Si le bouton de connexion est toujours présent, on se connecte
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='login']")))
             log("🔑 Session expirée ou inexistante. Authentification...")
             
-            # (Le processus de login reste identique mais sans les time.sleep inutiles)
             login_btn = driver.find_element(By.CSS_SELECTOR, "a[href*='login'], .user-link")
             driver.execute_script("arguments[0].click();", login_btn)
 
@@ -118,17 +124,14 @@ def run_scraper():
             pwd_el.send_keys(FG_PASSWORD)
             wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Sign in')] | //button[@id='next']"))).click()
             
-            # Attendre la redirection finale avant de sauvegarder
             wait.until(EC.presence_of_element_located((By.CLASS_NAME, "user-name")))
             save_cookies(driver)
         except:
             log("✅ Session déjà active.")
 
-        # Extraction (Logique simplifiée pour la performance)
         seen_runners = set()
         for trainer_url in URLS_ENTRAINEURS:
             driver.get(trainer_url)
-            # Attendre spécifiquement le tableau des partants
             rows = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "#partants_entraineur tbody tr")))
             
             trainer_name = clean_text(driver.find_element(By.TAG_NAME, "h1").text).replace("ENTRAINEUR", "").strip()
@@ -152,11 +155,9 @@ def run_scraper():
             for r in runners_to_process:
                 driver.get(r['url'])
                 try:
-                    # Extraction directe via sélecteurs plus précis
                     details_txt = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "course-detail"))).text
                     heure = re.search(r'(\d{1,2}h\d{2})', details_txt).group(1) if re.search(r'(\d{1,2}h\d{2})', details_txt) else "00:00"
                     
-                    # On cherche la ligne du cheval par son nom en minuscules
                     cheval_row = driver.find_element(By.XPATH, f"//tr[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{r['pure_name'].lower()}')]")
                     cells_c = cheval_row.find_elements(By.TAG_NAME, "td")
                     
