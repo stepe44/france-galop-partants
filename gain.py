@@ -82,15 +82,13 @@ def fetch_json_with_driver(driver, url, context=""):
     import urllib.parse
     
     try:
-        log(f"   [DEBUG-PMU] {context}")
         driver.get(url)
         time.sleep(1.5) 
         
         page_source = driver.page_source
         
-        # Si le réseau coupe la résolution DNS, on rebondit sur un proxy public transparent
+        # Si le réseau coupe la résolution DNS, on rebondit sur un proxy transparent
         if "ERR_NAME_NOT_RESOLVED" in page_source or "ERR_CONNECTION" in page_source:
-            log("   [DEBUG-PMU] ⚠️ Blocage DNS détecté. Tentative via proxy de secours...")
             encoded_url = urllib.parse.quote(url, safe='')
             proxy_url = f"https://api.allorigins.win/raw?url={encoded_url}"
             driver.get(proxy_url)
@@ -100,10 +98,8 @@ def fetch_json_with_driver(driver, url, context=""):
             json_text = driver.find_element(By.TAG_NAME, "pre").text
             return json.loads(json_text)
         except Exception:
-            log("   [DEBUG-PMU] ❌ Impossible d'extraire le JSON de la page.")
             return None
     except Exception as e:
-        log(f"   [DEBUG-PMU] ❌ Erreur réseau : {str(e)[:50]}")
         return None
 
 def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
@@ -111,33 +107,34 @@ def get_pmu_rapports(driver, date_str, hippodrome_name, horse_name):
     base_url = "https://offline.turfinfo.api.pmu.fr/rest/client/7/programme"
     
     try:
-        log(f"   [DEBUG-PMU] 🔍 Recherche PMU pour {horse_name} à {hippodrome_name} le {formatted_date}")
-        
         programme = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}", "Lecture Programme")
         if not programme or 'programme' not in programme: 
             return "Indisponible"
         
+        # Tolérance maximale sur le nom de l'hippodrome (6 premières lettres sans espaces/tirets)
+        fg_hippo_clean = re.sub(r'[^A-Z]', '', hippodrome_name.upper())
+        fg_hippo_short = fg_hippo_clean[:6]
+        
         for reunion in programme['programme'].get('reunions', []):
-            # LECTURE SÉCURISÉE : L'API Offline range l'hippodrome dans un sous-objet
             hippo_data = reunion.get('hippodrome', {})
-            r_name = hippo_data.get('libelleCourt') or hippo_data.get('libelleLong') or reunion.get('libelle') or ""
+            r_name = hippo_data.get('libelleCourt', '') + hippo_data.get('libelleLong', '') + reunion.get('libelle', '')
+            r_name_clean = re.sub(r'[^A-Z]', '', r_name.upper())
             
-            if r_name and (hippodrome_name.upper() in r_name.upper() or r_name.upper() in hippodrome_name.upper()):
+            # Si les 6 premières lettres de l'hippodrome correspondent (ex: SENONN dans SENONNES POUANCE)
+            if fg_hippo_short and fg_hippo_short in r_name_clean:
                 r_num = reunion.get('numOfficiel')
                 
                 for course in reunion.get('courses', []):
                     c_num = course.get('numOrdre')
                     
-                    partants = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants", f"Lecture Partants R{r_num}C{c_num}")
+                    partants = fetch_json_with_driver(driver, f"{base_url}/{formatted_date}/R{r_num}/C{c_num}/participants", "Lecture Partants")
                     if not partants: continue
                     
                     for p in partants.get('participants', []):
-                        nom_cheval = p.get('nom', '')
-                        if horse_name.upper() in nom_cheval.upper():
+                        if horse_name.upper() in p.get('nom', '').upper():
                             return fetch_dividendes(driver, base_url, formatted_date, r_num, c_num, p.get('numProno'))
                             
     except Exception as e:
-        log(f"   [DEBUG-PMU] 💥 Erreur d'exécution API: {str(e)[:50]}")
         return "Erreur API"
     
     return "Non trouvé"
@@ -148,22 +145,45 @@ def fetch_dividendes(driver, base_url, date, r, c, num_p):
         data = fetch_json_with_driver(driver, url, "Lecture Rapports")
         if not data: return "Erreur rapports"
         
+        # Gestion multi-format du JSON du PMU
+        if isinstance(data, dict):
+            rapports_list = data.get('rapports', []) or data.get('rapport', [])
+        elif isinstance(data, list):
+            rapports_list = data
+        else:
+            return "Erreur rapports"
+            
         sg, sp = 0, 0
-        for r_type in data.get('rapports', []):
-            if r_type.get('typePari') == 'SIMPLE_GAGNANT':
+        for r_type in rapports_list:
+            type_pari = r_type.get('typePari', '')
+            
+            # Simple Gagnant (classique ou e-pari)
+            if 'SIMPLE_GAGNANT' in type_pari or 'SG' in type_pari:
                 for div in r_type.get('dividendes', []):
-                    if str(num_p) in div.get('combinaison', ''): 
-                        sg = div.get('dividende', 0) / 100
-            if r_type.get('typePari') == 'SIMPLE_PLACE':
+                    comb_raw = div.get('combinaison', div.get('chevaux', ''))
+                    comb_str = str(comb_raw[0]) if isinstance(comb_raw, list) and comb_raw else str(comb_raw)
+                    
+                    if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
+                        val = div.get('dividende', div.get('dividendePourUnEuro', 0))
+                        # Si le PMU renvoie 250 (centimes) au lieu de 2.50 (euros)
+                        sg = val / 100.0 if isinstance(val, int) and val > 0 else val
+                        
+            # Simple Placé (classique ou e-pari)
+            if 'SIMPLE_PLACE' in type_pari or 'SP' in type_pari:
                 for div in r_type.get('dividendes', []):
-                    if str(num_p) in div.get('combinaison', ''): 
-                        sp = div.get('dividende', 0) / 100
+                    comb_raw = div.get('combinaison', div.get('chevaux', ''))
+                    comb_str = str(comb_raw[0]) if isinstance(comb_raw, list) and comb_raw else str(comb_raw)
+                    
+                    if str(num_p) == comb_str or str(num_p).zfill(2) == comb_str:
+                        val = div.get('dividende', div.get('dividendePourUnEuro', 0))
+                        sp = val / 100.0 if isinstance(val, int) and val > 0 else val
         
-        if sg > 0: return f"Gagnant: {sg}€ | Placé: {sp}€"
+        if sg > 0 and sp > 0: return f"Gagnant: {sg}€ | Placé: {sp}€"
+        if sg > 0: return f"Gagnant: {sg}€"
         if sp > 0: return f"Placé: {sp}€"
         return "Pas de rapport"
+        
     except Exception as e:
-        log(f"   [DEBUG-PMU] 💥 Erreur dividendes: {str(e)[:50]}")
         return "Erreur rapports"
 
 # --- MAIN ---
