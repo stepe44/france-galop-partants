@@ -2,16 +2,15 @@ name: Automatisation France Galop (Quotidien & Hebdo)
 
 on:
   schedule:
-    # 1. Lancement quotidien pour scraper.py (7h00 UTC)
     - cron: '0 7 * * *'
-    # 2. Lancement hebdomadaire pour gain.py (Lundi 8h00 UTC)
     - cron: '0 8 * * 1'
-  workflow_dispatch: # Permet de lancer manuellement depuis l'onglet Actions
+  workflow_dispatch:
 
 jobs:
   france-galop-tasks:
     runs-on: ubuntu-latest
-    environment: login # Indispensable pour accéder à vos secrets
+    environment: login
+    timeout-minutes: 15
     
     steps:
       - name: Checkout du code
@@ -22,7 +21,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      # AJOUT : Restauration et gestion du cache des cookies
       - name: Restauration du cache des cookies
         uses: actions/cache@v4
         with:
@@ -63,7 +61,7 @@ jobs:
 
       - name: Sauvegarder les captures d'écran (Debug)
         uses: actions/upload-artifact@v4
-        if: always() # S'exécute toujours pour pouvoir analyser le succès ou l'échec
+        if: always()
         with:
           name: selenium-screenshots
           path: "*.png" 
