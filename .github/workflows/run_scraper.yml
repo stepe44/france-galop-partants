@@ -40,7 +40,7 @@ jobs:
           pip install selenium webdriver-manager requests undetected-chromedriver
 
       - name: Exécution du Scraper Quotidien (Partants)
-        if: github.event.schedule == '0 7 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -50,7 +50,7 @@ jobs:
         run: xvfb-run --auto-servernum python scraper.py
             
       - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
-        if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '0 7 * * 1' || github.event_name == 'workflow_dispatch'
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
