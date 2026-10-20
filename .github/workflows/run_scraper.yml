@@ -2,27 +2,39 @@ name: Automatisation France Galop (Quotidien & Hebdo)
 
 on:
   schedule:
+    # Quotidien : 05:00 UTC (06h00 ou 07h00 heure de Paris selon saison)
     - cron: '0 5 * * *'
+    # Hebdomadaire : Tous les lundis à 08:00 UTC (09h00 ou 10h00 heure de Paris)
     - cron: '0 8 * * 1'
   workflow_dispatch:
+    inputs:
+      script_to_run:
+        description: 'Sélectionnez le script à exécuter :'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - scraper (quotidien)
+          - gain (hebdomadaire)
 
 jobs:
   france-galop-tasks:
     runs-on: ubuntu-latest
     environment: login
     timeout-minutes: 15
-    
+
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Installation de Python 3.10
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Restauration du cache des cookies
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: cookies.json
           key: fg-cookies-${{ github.run_id }}
@@ -32,15 +44,22 @@ jobs:
       - name: Installation de XVFB et dépendances système
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libxi6 libnss3 libxss1 libasound2t64 libatk1.0-0 libc6 ca-certificates fonts-liberation libappindicator3-1 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libgcc1 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 lsb-release wget xdg-utils
-      
+          sudo apt-get install -y xvfb libxi6 libnss3 libxss1 libasound2t64 libatk1.0-0 libc6 \
+            ca-certificates fonts-liberation libappindicator3-1 libcups2 libdbus-1-3 libexpat1 \
+            libfontconfig1 libgbm1 libgcc1 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 \
+            libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 \
+            libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxss1 libxtst6 lsb-release wget xdg-utils
+
       - name: Installation des dépendances Python
         run: |
           python -m pip install --upgrade pip
           pip install selenium webdriver-manager requests undetected-chromedriver
 
       - name: Exécution du Scraper Quotidien (Partants)
-        if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+        if: |
+          github.event.schedule == '0 5 * * *' ||
+          (github.event_name == 'workflow_dispatch' && (inputs.script_to_run == 'all' || inputs.script_to_run == 'scraper (quotidien)'))
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -48,9 +67,11 @@ jobs:
           EMAIL_DEST: ${{ secrets.EMAIL_DEST }}
           GREEN_API_URL: ${{ secrets.GREEN_API_URL }}
         run: xvfb-run --auto-servernum python scraper.py
-            
+
       - name: Exécution du Rapport Hebdomadaire (Gain/Top 4)
-        if: github.event.schedule == '0 7 * * 1' || github.event_name == 'workflow_dispatch'
+        if: |
+          github.event.schedule == '0 8 * * 1' ||
+          (github.event_name == 'workflow_dispatch' && (inputs.script_to_run == 'all' || inputs.script_to_run == 'gain (hebdomadaire)'))
         env:
           FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -60,9 +81,10 @@ jobs:
         run: xvfb-run --auto-servernum python gain.py
 
       - name: Sauvegarder les captures d'écran (Debug)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: selenium-screenshots
-          path: "*.png" 
+          path: "*.png"
+          if-no-files-found: ignore
           retention-days: 2
