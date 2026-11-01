@@ -3,9 +3,9 @@ name: Automatisation France Galop (Quotidien & Hebdo)
 on:
   schedule:
     # Quotidien : 05:00 UTC (06h00 ou 07h00 heure de Paris selon saison)
-    - cron: '0 5 * * *'
+    - cron: '0 4 * * *'
     # Hebdomadaire : Tous les lundis à 08:00 UTC (09h00 ou 10h00 heure de Paris)
-    - cron: '0 8 * * 1'
+    - cron: '0 7 * * 1'
   workflow_dispatch:
     inputs:
       script_to_run:
