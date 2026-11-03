@@ -41,7 +41,7 @@ jobs:
           restore-keys: |
             fg-cookies-
 
-      - name: Installation de XVFB
+      - name: Installation de XVFB (version nettoyée)
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
